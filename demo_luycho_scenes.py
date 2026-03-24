@@ -721,7 +721,7 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
     ]:
         Image.fromarray((np.clip(arr, 0, 1)*255).astype(np.uint8)).save(
             os.path.join(out_dir, fname))
-    bs_norm = (base_shape - base_shape.min()) / (base_shape.ptp() + 1e-8)
+    bs_norm = (base_shape - base_shape.min()) / (np.ptp(base_shape) + 1e-8)
     Image.fromarray((bs_norm * 255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_base_shape.png"))
 
