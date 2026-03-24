@@ -1,0 +1,7 @@
+numpy>=1.23
+scipy>=1.9
+matplotlib>=3.6
+Pillow>=9.0
+trimesh>=3.21
+open3d>=0.17
+scikit-image>=0.20
