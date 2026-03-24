@@ -721,7 +721,7 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
     ]:
         Image.fromarray((np.clip(arr, 0, 1)*255).astype(np.uint8)).save(
             os.path.join(out_dir, fname))
-    bs_norm = (base_shape - base_shape.min()) / (base_shape.ptp() + 1e-8)
+    bs_norm = (base_shape - base_shape.min()) / (np.ptp(base_shape) + 1e-8)
     Image.fromarray((bs_norm * 255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_base_shape.png"))
 
@@ -862,7 +862,8 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
 
     # Loss curve
     ax_loss = fig.add_subplot(gs[2, 4])
-    ax_loss.plot(losses, color=(sc[0]*1.5, sc[1]*1.5, sc[2]*1.5), linewidth=1.2)
+    loss_color = tuple(min(c * 1.5, 1.0) for c in sc)
+    ax_loss.plot(losses, color=loss_color, linewidth=1.2)
     ax_loss.set_facecolor((0.08, 0.08, 0.12))
     ax_loss.set_title("Optimization Convergence", fontsize=10, color="white")
     ax_loss.set_xlabel("Iteration", fontsize=9, color="white")
