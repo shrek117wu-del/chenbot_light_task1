@@ -862,7 +862,8 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
 
     # Loss curve
     ax_loss = fig.add_subplot(gs[2, 4])
-    ax_loss.plot(losses, color=(sc[0]*1.5, sc[1]*1.5, sc[2]*1.5), linewidth=1.2)
+    loss_color = tuple(min(c * 1.5, 1.0) for c in sc)
+    ax_loss.plot(losses, color=loss_color, linewidth=1.2)
     ax_loss.set_facecolor((0.08, 0.08, 0.12))
     ax_loss.set_title("Optimization Convergence", fontsize=10, color="white")
     ax_loss.set_xlabel("Iteration", fontsize=9, color="white")
