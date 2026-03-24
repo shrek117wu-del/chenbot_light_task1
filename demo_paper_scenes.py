@@ -563,7 +563,7 @@ def run_scene(scene, output_root="demo_outputs", res=256, tex_iter=400):
     Image.fromarray((np.clip(reflected_img, 0, 1)*255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_reflected.png"))
     Image.fromarray(((base_shape - base_shape.min()) /
-                      (base_shape.ptp() + 1e-8) * 255).astype(np.uint8)).save(
+                      (np.ptp(base_shape) + 1e-8) * 255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_base_shape.png"))
 
     # Annular mask
@@ -650,7 +650,7 @@ def run_scene(scene, output_root="demo_outputs", res=256, tex_iter=400):
     axes[0, 0].set_title("INPUT: Direct View Target", fontsize=12, fontweight="bold")
     axes[0, 1].imshow(reflected_img, cmap="gray")
     axes[0, 1].set_title("INPUT: Reflected View Target", fontsize=12, fontweight="bold")
-    bs_display = (base_shape - base_shape.min()) / (base_shape.ptp() + 1e-8)
+    bs_display = (base_shape - base_shape.min()) / (np.ptp(base_shape) + 1e-8)
     axes[0, 2].imshow(bs_display, cmap="terrain")
     axes[0, 2].set_title("INPUT: Base Saucer Shape", fontsize=12, fontweight="bold")
 
