@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.pyo
+demo_outputs/
+luycho_demo_outputs/
+*.png
+*.obj
+*.mtl
+*.npy
