@@ -179,21 +179,15 @@ def _scatter_gradient(
     weight: float,
     res: int,
 ):
-    """Scatter per-pixel gradient back to texture coordinates."""
-    h, w = uv.shape[:2]
+    """Scatter per-pixel gradient back to texture coordinates (vectorized)."""
     u = uv[..., 0] * (res - 1)
     v = uv[..., 1] * (res - 1)
     u0 = np.clip(np.floor(u).astype(int), 0, res - 1)
     v0 = np.clip(np.floor(v).astype(int), 0, res - 1)
 
-    C = diff.shape[-1] if diff.ndim == 3 else 1
     if diff.ndim == 2:
         diff = diff[..., None]
 
-    for j in range(h):
-        for i in range(w):
-            if not valid[j, i]:
-                continue
-            r, c = v0[j, i], u0[j, i]
-            grad[r, c] += weight * 2.0 * diff[j, i]
-            count[r, c] += 1
+    j_idx, i_idx = np.where(valid)
+    np.add.at(grad, (v0[j_idx, i_idx], u0[j_idx, i_idx]), weight * 2.0 * diff[j_idx, i_idx])
+    np.add.at(count, (v0[j_idx, i_idx], u0[j_idx, i_idx]), 1)

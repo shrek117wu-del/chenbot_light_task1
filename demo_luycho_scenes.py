@@ -470,9 +470,9 @@ def ray_cyl_hit(origin, direction, R):
     hit = hit & (t > 1e-6)
     return t, hit
 
-def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None):
+def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None, saucer_heightfield=None):
     if eye is None:
-        eye = np.array([0.0, -4*saucer_R, 3*cup_H])
+        eye = np.array([0.0, -2*saucer_R, 4*cup_H])
     u = np.linspace(-1, 1, res)
     uu, vv = np.meshgrid(u, u, indexing="xy")
     theta = np.pi * uu
@@ -488,7 +488,20 @@ def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None):
     n = cylinder_normal(hp)
     rd = reflect_vec(d, n)
     dz = rd[..., 2]
-    t2 = -hp[..., 2] / (dz + 1e-12)
+    if saucer_heightfield is not None:
+        # Iterative per-pixel heightfield intersection
+        plane_z_map = np.zeros((res, res))
+        for _ in range(3):
+            t2 = (plane_z_map - hp[..., 2]) / (dz + 1e-12)
+            sp = hp + t2[..., None] * rd
+            su_tmp = (sp[..., 0] / saucer_R + 1) * 0.5
+            sv_tmp = (sp[..., 1] / saucer_R + 1) * 0.5
+            iu = np.clip((su_tmp * (res-1)).astype(int), 0, res-1)
+            iv = np.clip((sv_tmp * (res-1)).astype(int), 0, res-1)
+            plane_z_map = saucer_heightfield[iv, iu]
+        t2 = (plane_z_map - hp[..., 2]) / (dz + 1e-12)
+    else:
+        t2 = -hp[..., 2] / (dz + 1e-12)
     hit2 = t2 > 1e-6
     sp = hp + t2[..., None] * rd
     su = (sp[..., 0] / saucer_R + 1) * 0.5
@@ -597,10 +610,14 @@ def optimize_texture_adam(
 
     return tex, losses
 
-def refine_geometry(base_shape, direct_target, mask, res, n_iter=80):
-    """Refine saucer geometry to encode direct-view image in surface normals."""
+def refine_geometry(base_shape, direct_target, mask, res, n_iter=80,
+                    reflected_target=None, reflected_uv=None, reflected_valid=None):
+    """Refine saucer geometry to encode direct-view image in surface normals,
+    optionally also matching the reflected view."""
     if direct_target.ndim == 3:
         direct_target = np.mean(direct_target, axis=-1)
+    if reflected_target is not None and reflected_target.ndim == 3:
+        reflected_target = np.mean(reflected_target, axis=-1)
     disp = np.zeros((res, res))
     for gi in range(n_iter):
         hf = base_shape + disp * mask
@@ -608,6 +625,22 @@ def refine_geometry(base_shape, direct_target, mask, res, n_iter=80):
         shading = nrm[..., 2]
         err = (shading - direct_target) * mask
         adj = gaussian_filter(-0.003 * err, sigma=2.0)
+        # Add reflected view error term if available
+        if reflected_target is not None and reflected_uv is not None and reflected_valid is not None:
+            ref_render = bilinear_warp(shading[..., None], reflected_uv, reflected_valid)
+            if ref_render.ndim == 3:
+                ref_render = ref_render[..., 0]
+            ref_err = (ref_render - reflected_target) * reflected_valid
+            # Scatter reflected error back to saucer surface
+            ref_grad = np.zeros((res, res))
+            ref_cnt = np.zeros((res, res)) + 1e-8
+            rv_j, rv_i = np.where(reflected_valid)
+            rv_vi = np.clip((reflected_uv[rv_j, rv_i, 1] * (res-1)).astype(int), 0, res-1)
+            rv_ui = np.clip((reflected_uv[rv_j, rv_i, 0] * (res-1)).astype(int), 0, res-1)
+            np.add.at(ref_grad, (rv_vi, rv_ui), 2.0 * ref_err[rv_j, rv_i])
+            np.add.at(ref_cnt, (rv_vi, rv_ui), 1.0)
+            ref_grad /= ref_cnt
+            adj += gaussian_filter(-0.001 * ref_grad, sigma=2.0)
         disp += adj * mask
         disp = np.clip(disp, -0.25, 0.25)
     # Black-white enhancement
@@ -721,7 +754,7 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
     ]:
         Image.fromarray((np.clip(arr, 0, 1)*255).astype(np.uint8)).save(
             os.path.join(out_dir, fname))
-    bs_norm = (base_shape - base_shape.min()) / (np.ptp(base_shape) + 1e-8)
+    bs_norm = (base_shape - base_shape.min()) / ((base_shape.max() - base_shape.min()) + 1e-8)
     Image.fromarray((bs_norm * 255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_base_shape.png"))
 
@@ -731,14 +764,19 @@ def run_scene(scene, output_root="luycho_demo_outputs", work_res=256, tex_iter=5
     r = np.sqrt(uu**2 + vv**2)
     mask = ((r <= 1.0) & (r >= cup_R / sauc_R)).astype(float)
 
-    # Step 1: Geometry refinement
+    # Step 1: Geometry refinement (build initial flat reflection map first for joint optimization)
     print("  [1/4] Refining saucer geometry...")
-    final_hf = refine_geometry(base_shape, direct_img, mask, res, n_iter=80)
-
-    # Step 2: Build mappings
-    print("  [2/4] Building reflection mapping...")
-    ref_uv, ref_valid = build_reflection_map(res, cup_R, cup_H, sauc_R)
     dir_uv, dir_valid = build_direct_map(res, sauc_R, cup_R)
+    flat_ref_uv, flat_ref_valid = build_reflection_map(res, cup_R, cup_H, sauc_R)
+    final_hf = refine_geometry(
+        base_shape, direct_img, mask, res, n_iter=80,
+        reflected_target=reflected_img,
+        reflected_uv=flat_ref_uv, reflected_valid=flat_ref_valid
+    )
+
+    # Step 2: Build mappings (using refined heightfield for accurate reflection)
+    print("  [2/4] Building reflection mapping...")
+    ref_uv, ref_valid = build_reflection_map(res, cup_R, cup_H, sauc_R, saucer_heightfield=final_hf)
 
     # Step 3: Texture optimization
     print(f"  [3/4] Optimizing saucer texture ({tex_iter} iterations)...")
