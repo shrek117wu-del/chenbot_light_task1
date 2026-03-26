@@ -105,7 +105,7 @@ def build_reflection_map(
     valid : (img_res, img_res) bool
     """
     if eye_pos is None:
-        eye_pos = np.array([0.0, -4.0 * saucer_radius, 3.0 * cup_height])
+        eye_pos = np.array([0.0, -2.0 * saucer_radius, 4.0 * cup_height])
 
     # Build a grid of look-at directions covering the cup from the eye
     # We parameterize the "virtual screen" so it subtends the cup
@@ -145,12 +145,12 @@ def build_reflection_map(
 
     # Intersect reflected ray with saucer plane (z = 0 + heightfield)
     if saucer_heightfield is not None:
-        # Iterative approach: start with z=0, then refine
-        plane_z = 0.0
+        # Iterative per-pixel approach: refine intersection using actual heightfield
+        dz = ref_dir[..., 2]
+        plane_z_map = np.zeros((img_res, img_res))
         for _ in range(3):
-            t_plane, hit_plane = ray_plane_intersect(hit_pt, ref_dir, plane_z)
-            saucer_pt = hit_pt + t_plane[..., None] * ref_dir
-            # Look up height at that saucer position
+            t_vals = (plane_z_map - hit_pt[..., 2]) / (dz + 1e-12)
+            saucer_pt = hit_pt + t_vals[..., None] * ref_dir
             sx = saucer_pt[..., 0]
             sy = saucer_pt[..., 1]
             su = (sx / saucer_radius + 1.0) * 0.5
@@ -158,12 +158,12 @@ def build_reflection_map(
             iu = np.clip((su * (img_res - 1)).astype(int), 0, img_res - 1)
             iv = np.clip((sv * (img_res - 1)).astype(int), 0, img_res - 1)
             plane_z_map = saucer_heightfield[iv, iu]
-            plane_z = np.mean(plane_z_map)
+        t_plane = (plane_z_map - hit_pt[..., 2]) / (dz + 1e-12)
+        hit_plane = t_plane > 1e-6
+        saucer_pt = hit_pt + t_plane[..., None] * ref_dir
     else:
-        plane_z = 0.0
-
-    t_plane, hit_plane = ray_plane_intersect(hit_pt, ref_dir, plane_z)
-    saucer_pt = hit_pt + t_plane[..., None] * ref_dir
+        t_plane, hit_plane = ray_plane_intersect(hit_pt, ref_dir, 0.0)
+        saucer_pt = hit_pt + t_plane[..., None] * ref_dir
 
     # Convert saucer point to UV
     sx = saucer_pt[..., 0]

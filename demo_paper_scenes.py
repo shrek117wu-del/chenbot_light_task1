@@ -368,9 +368,9 @@ def ray_cyl_hit(origin, direction, R):
     hit = hit & (t > 1e-6)
     return t, hit
 
-def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None):
+def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None, saucer_heightfield=None):
     if eye is None:
-        eye = np.array([0.0, -4*saucer_R, 3*cup_H])
+        eye = np.array([0.0, -2*saucer_R, 4*cup_H])
     u = np.linspace(-1, 1, res)
     uu, vv = np.meshgrid(u, u, indexing="xy")
     theta = np.pi * uu
@@ -386,7 +386,20 @@ def build_reflection_map(res, cup_R=1.0, cup_H=2.0, saucer_R=3.0, eye=None):
     n = cylinder_normal(hp)
     rd = reflect_vec(d, n)
     dz = rd[..., 2]
-    t2 = -hp[..., 2] / (dz + 1e-12)
+    if saucer_heightfield is not None:
+        # Iterative per-pixel heightfield intersection
+        plane_z_map = np.zeros((res, res))
+        for _ in range(3):
+            t2 = (plane_z_map - hp[..., 2]) / (dz + 1e-12)
+            sp = hp + t2[..., None] * rd
+            su_tmp = (sp[..., 0] / saucer_R + 1) * 0.5
+            sv_tmp = (sp[..., 1] / saucer_R + 1) * 0.5
+            iu = np.clip((su_tmp * (res-1)).astype(int), 0, res-1)
+            iv = np.clip((sv_tmp * (res-1)).astype(int), 0, res-1)
+            plane_z_map = saucer_heightfield[iv, iu]
+        t2 = (plane_z_map - hp[..., 2]) / (dz + 1e-12)
+    else:
+        t2 = -hp[..., 2] / (dz + 1e-12)
     hit2 = t2 > 1e-6
     sp = hp + t2[..., None] * rd
     su = (sp[..., 0] / saucer_R + 1) * 0.5
@@ -458,7 +471,7 @@ def optimize_texture_fast(
         if it % 100 == 0:
             print(f"    tex iter {it:4d}  loss={loss:.6f}")
 
-        # Scatter gradient
+        # Scatter gradient (vectorized)
         grad = np.zeros_like(tex)
         cnt = np.zeros((res, res, 1)) + 1e-8
         for uv_map, diff, val in [
@@ -468,13 +481,9 @@ def optimize_texture_fast(
             if diff.ndim == 2: diff = diff[..., None]
             ui = np.clip((uv_map[..., 0] * (res-1)).astype(int), 0, res-1)
             vi = np.clip((uv_map[..., 1] * (res-1)).astype(int), 0, res-1)
-            for j in range(0, res, 2):  # stride for speed
-                for i in range(0, res, 2):
-                    if not val[j, i]:
-                        continue
-                    r, c = vi[j, i], ui[j, i]
-                    grad[r, c] += 2.0 * diff[j, i]
-                    cnt[r, c] += 1
+            j_idx, i_idx = np.where(val)
+            np.add.at(grad, (vi[j_idx, i_idx], ui[j_idx, i_idx]), 2.0 * diff[j_idx, i_idx])
+            np.add.at(cnt, (vi[j_idx, i_idx], ui[j_idx, i_idx]), 1)
 
         grad /= cnt
         grad *= mask[..., None]
@@ -563,7 +572,7 @@ def run_scene(scene, output_root="demo_outputs", res=256, tex_iter=400):
     Image.fromarray((np.clip(reflected_img, 0, 1)*255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_reflected.png"))
     Image.fromarray(((base_shape - base_shape.min()) /
-                      (np.ptp(base_shape) + 1e-8) * 255).astype(np.uint8)).save(
+                      ((base_shape.max() - base_shape.min()) + 1e-8) * 255).astype(np.uint8)).save(
         os.path.join(out_dir, "input_base_shape.png"))
 
     # Annular mask
@@ -596,7 +605,7 @@ def run_scene(scene, output_root="demo_outputs", res=256, tex_iter=400):
 
     # ── Step 2: Build reflection & direct maps ────────────────────────
     print("  [2/4] Building reflection mapping...")
-    ref_uv, ref_valid = build_reflection_map(res, cup_R, cup_H, sauc_R)
+    ref_uv, ref_valid = build_reflection_map(res, cup_R, cup_H, sauc_R, saucer_heightfield=final_hf)
     dir_uv, dir_valid = build_direct_map(res, sauc_R, cup_R)
 
     # ── Step 3: Texture optimization ──────────────────────────────────
@@ -650,7 +659,7 @@ def run_scene(scene, output_root="demo_outputs", res=256, tex_iter=400):
     axes[0, 0].set_title("INPUT: Direct View Target", fontsize=12, fontweight="bold")
     axes[0, 1].imshow(reflected_img, cmap="gray")
     axes[0, 1].set_title("INPUT: Reflected View Target", fontsize=12, fontweight="bold")
-    bs_display = (base_shape - base_shape.min()) / (np.ptp(base_shape) + 1e-8)
+    bs_display = (base_shape - base_shape.min()) / ((base_shape.max() - base_shape.min()) + 1e-8)
     axes[0, 2].imshow(bs_display, cmap="terrain")
     axes[0, 2].set_title("INPUT: Base Saucer Shape", fontsize=12, fontweight="bold")
 
