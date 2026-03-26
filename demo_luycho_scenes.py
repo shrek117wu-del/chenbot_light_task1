@@ -5,7 +5,7 @@ from the provided photographs using the Computational Mirror Cup and Saucer Art
 algorithm (Wu et al., ACM TOG 2022, doi:10.1145/3517120).
 
 Scene 1 (Image 4): Green saucer — Jungle dinosaur (direct) → Running person (reflected)
-Scene 2 (Image 3): Blue saucer — Black cat on tiles (direct) → Sitting cat (reflected)
+Scene 2 (Image 3): Blue saucer — Pink human face with pipe (direct) → Same face with black cat on head (reflected)
 Scene 3 (Image 2): Green saucer — Castle in forest (direct) → Running person (reflected)
 Scene 4 (Image 1): Dark blue saucer — Ocean turtle scene (direct) → Yellow turtle (reflected)
 
@@ -183,89 +183,90 @@ def make_scene1_direct(res=512):
 
 
 # ────────────────────────────────────────────────────────────────────
-# Scene 2: Blue saucer — Black cat (reflected in cup)
-#   Direct view: Distorted cat on tile floor
-#   Reflected view: Black cat sitting upright
+# Scene 2: Blue saucer — Human face with pipe (direct) + cat on head (reflected)
+#   Direct view: Pink human face with black hair and dangling pipe
+#   Reflected view: Same face with black cat sitting on top of the head
 # ────────────────────────────────────────────────────────────────────
 
-def make_scene2_reflected(res=512):
-    """Sitting black cat — reflected in the silver mirror cup."""
-    bg = _rgb(res, 0.25, 0.45, 0.80)  # blue background
-
-    # Cat body (sitting pose)
-    body = _ellipse_mask(res, 0.50, 0.55, 0.10, 0.16)
-    # Head
-    head = _circle_mask_abs(res, 0.50, 0.34, 0.07)
-    # Ears (triangles)
-    ear_l = _triangle_mask(res, 0.43, 0.34, 0.40, 0.22, 0.46, 0.28)
-    ear_r = _triangle_mask(res, 0.57, 0.34, 0.54, 0.28, 0.60, 0.22)
-    # Tail (curved)
-    u = np.linspace(0, 1, res)
-    uu, vv = np.meshgrid(u, u, indexing="xy")
-    tail_x = 0.62 + 0.08 * np.sin(3 * np.pi * (vv - 0.50))
-    tail = ((np.abs(uu - tail_x) < 0.015) & (vv > 0.50) & (vv < 0.72)).astype(float)
-    tail = gaussian_filter(tail, sigma=2)
-
-    cat = np.clip(body + head + ear_l + ear_r + tail, 0, 1)
-    cat_color = _rgb(res, 0.08, 0.08, 0.10)  # black
+def make_scene2_direct(res=512):
+    """Pink human face with black hair and dangling pipe — direct view on saucer."""
+    bg = _rgb(res, 0.22, 0.42, 0.78)  # blue background matching saucer color
     img = bg.copy()
-    img = _blend(img, cat_color, cat)
 
-    # Eyes (yellow)
-    eye_l = _circle_mask_abs(res, 0.47, 0.32, 0.012)
-    eye_r = _circle_mask_abs(res, 0.53, 0.32, 0.012)
-    img = _blend(img, _rgb(res, 0.95, 0.90, 0.20), eye_l + eye_r)
+    # Face (pink/skin-tone ellipse)
+    face = _ellipse_mask(res, 0.50, 0.53, 0.16, 0.20)
+    img = _blend(img, _rgb(res, 0.96, 0.76, 0.65), face)
 
-    # Pink belly accent
-    belly = _ellipse_mask(res, 0.50, 0.52, 0.06, 0.08)
-    img = _blend(img, _rgb(res, 0.75, 0.40, 0.55), belly * 0.5)
+    # Hair — top patch and side patches (black)
+    hair_top = _ellipse_mask(res, 0.50, 0.33, 0.17, 0.10)
+    hair_left = _ellipse_mask(res, 0.34, 0.46, 0.06, 0.12)
+    hair_right = _ellipse_mask(res, 0.66, 0.46, 0.06, 0.12)
+    hair = np.clip(hair_top + hair_left + hair_right, 0, 1)
+    # Only draw hair where it overlaps or extends beyond the face
+    img = _blend(img, _rgb(res, 0.05, 0.05, 0.07), hair)
 
-    # Whiskers (thin lines)
-    for dy in [-0.01, 0, 0.01]:
-        whisker = _rect_mask(res, 0.32, 0.345 + dy, 0.44, 0.348 + dy)
-        whisker += _rect_mask(res, 0.56, 0.345 + dy, 0.68, 0.348 + dy)
-        img = _blend(img, _rgb(res, 0.9, 0.9, 0.9), np.clip(whisker, 0, 1) * 0.7)
+    # Re-draw face to restore skin tone where hair overlaps face interior
+    # (hair at top, face underneath visible sides)
+    face_inner = _ellipse_mask(res, 0.50, 0.55, 0.13, 0.17)
+    img = _blend(img, _rgb(res, 0.96, 0.76, 0.65), face_inner)
 
-    # Floor tile pattern
-    tile_y = vv > 0.72
-    tile_check = ((np.floor(uu * 8).astype(int) + np.floor(vv * 8).astype(int)) % 2)
-    tile_pattern = (tile_check * tile_y).astype(float)
-    img = _blend(img, _rgb(res, 0.30, 0.55, 0.75), tile_pattern * 0.4)
+    # Eyes (small dark circles)
+    eye_l = _circle_mask_abs(res, 0.44, 0.49, 0.020)
+    eye_r = _circle_mask_abs(res, 0.56, 0.49, 0.020)
+    img = _blend(img, _rgb(res, 0.10, 0.06, 0.04), eye_l + eye_r)
+
+    # Nose (small ellipse below eyes)
+    nose = _ellipse_mask(res, 0.50, 0.56, 0.028, 0.020)
+    img = _blend(img, _rgb(res, 0.88, 0.62, 0.52), nose)
+
+    # Mouth (small horizontal ellipse)
+    mouth = _ellipse_mask(res, 0.50, 0.62, 0.042, 0.014)
+    img = _blend(img, _rgb(res, 0.75, 0.35, 0.30), mouth)
+
+    # Pipe stem (brown rectangle extending right from mouth corner)
+    pipe_stem = _rect_mask(res, 0.54, 0.618, 0.70, 0.630)
+    img = _blend(img, _rgb(res, 0.55, 0.32, 0.10), pipe_stem)
+
+    # Pipe bowl (ellipse at end of stem)
+    pipe_bowl = _ellipse_mask(res, 0.69, 0.605, 0.030, 0.022)
+    img = _blend(img, _rgb(res, 0.50, 0.28, 0.08), pipe_bowl)
+
+    # Smoke wisps (thin bright wisps rising from pipe bowl)
+    u01 = np.linspace(0, 1, res)
+    uu01, vv01 = np.meshgrid(u01, u01, indexing="xy")
+    for i, (sx, phase) in enumerate([(0.69, 0.0), (0.71, 0.5), (0.67, 1.0)]):
+        smoke_cx = sx + 0.018 * np.sin(phase + 6.0 * np.pi * (0.60 - vv01))
+        smoke = (np.abs(uu01 - smoke_cx) < 0.007) & (vv01 > 0.52) & (vv01 < 0.60)
+        smoke_f = gaussian_filter(smoke.astype(float), sigma=3) * 0.55
+        img = _blend(img, _rgb(res, 0.90, 0.90, 0.92), smoke_f)
 
     return np.clip(img, 0, 1)
 
 
-def make_scene2_direct(res=512):
-    """Distorted black cat on blue tile floor — direct view on saucer."""
-    uu, vv, r, theta = _coord_grid(res)
-    bg = _rgb(res, 0.22, 0.42, 0.78)
+def make_scene2_reflected(res=512):
+    """Human face with pipe, black cat sitting on head — reflected in the silver mirror cup."""
+    img = make_scene2_direct(res)
 
-    img = bg.copy()
-
-    # Tile floor (perspective distorted checkerboard)
+    # Black cat body perched on top of the person's head
+    cat_body = _ellipse_mask(res, 0.50, 0.25, 0.07, 0.09)
+    cat_head = _circle_mask_abs(res, 0.50, 0.15, 0.055)
+    # Pointed ears
+    ear_l = _triangle_mask(res, 0.45, 0.16, 0.42, 0.07, 0.48, 0.12)
+    ear_r = _triangle_mask(res, 0.55, 0.16, 0.52, 0.12, 0.58, 0.07)
+    # Tail curving to the side
     u01 = np.linspace(0, 1, res)
     uu01, vv01 = np.meshgrid(u01, u01, indexing="xy")
-    check = ((np.floor(uu01 * 10).astype(int) + np.floor(vv01 * 10).astype(int)) % 2)
-    img = _blend(img, _rgb(res, 0.18, 0.38, 0.70), check.astype(float) * 0.3)
-
-    # Distorted cat silhouette (elongated, anamorphic)
-    cat_body = _ellipse_mask(res, 0.48, 0.50, 0.15, 0.28)  # very tall
-    cat_head = _ellipse_mask(res, 0.48, 0.20, 0.08, 0.06)
-    ear_l = _triangle_mask(res, 0.42, 0.20, 0.38, 0.10, 0.44, 0.15)
-    ear_r = _triangle_mask(res, 0.54, 0.20, 0.52, 0.15, 0.58, 0.10)
-    tail = _ellipse_mask(res, 0.62, 0.60, 0.03, 0.18)
+    tail_x = 0.60 + 0.06 * np.sin(3.0 * np.pi * (vv01 - 0.22))
+    tail = ((np.abs(uu01 - tail_x) < 0.013) & (vv01 > 0.22) & (vv01 < 0.36)).astype(float)
+    tail = gaussian_filter(tail, sigma=2)
 
     cat = np.clip(cat_body + cat_head + ear_l + ear_r + tail, 0, 1)
-    img = _blend(img, _rgb(res, 0.06, 0.06, 0.08), cat * 0.9)
+    img = _blend(img, _rgb(res, 0.06, 0.06, 0.08), cat)
 
-    # Pink belly (distorted)
-    belly = _ellipse_mask(res, 0.48, 0.48, 0.08, 0.14)
-    img = _blend(img, _rgb(res, 0.70, 0.35, 0.50), belly * 0.4)
-
-    # Mouse toy
-    mouse = _ellipse_mask(res, 0.30, 0.78, 0.03, 0.02)
-    mouse_tail = _rect_mask(res, 0.24, 0.775, 0.30, 0.785)
-    img = _blend(img, _rgb(res, 0.80, 0.80, 0.75), (mouse + mouse_tail) * 0.8)
+    # Cat yellow eyes
+    cat_eye_l = _circle_mask_abs(res, 0.47, 0.14, 0.011)
+    cat_eye_r = _circle_mask_abs(res, 0.53, 0.14, 0.011)
+    img = _blend(img, _rgb(res, 0.95, 0.88, 0.15), cat_eye_l + cat_eye_r)
 
     return np.clip(img, 0, 1)
 
@@ -680,11 +681,11 @@ def get_luycho_scenes(res=512):
             "cup_radius": 1.0, "cup_height": 2.0, "saucer_radius": 3.0,
         },
         {
-            "name": "scene2_blue_black_cat",
+            "name": "scene2_blue_face_pipe_cat",
             "photo": "Image 3 (blue saucer, silver cup)",
             "description": (
-                "Blue wave saucer — Direct: Distorted black cat on tile floor "
-                "with mouse toy. Reflected: Sitting black cat with yellow eyes."
+                "Blue wave saucer — Direct: Pink human face with black hair and dangling pipe. "
+                "Reflected: Same face with a black cat sitting on top of the head."
             ),
             "direct_image": make_scene2_direct(res),
             "reflected_image": make_scene2_reflected(res),
