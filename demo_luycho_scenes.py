@@ -16,6 +16,11 @@ Usage:
     python demo_luycho_scenes.py                    # Run all 4 scenes
     python demo_luycho_scenes.py --scene 1          # Run scene 1 only
     python demo_luycho_scenes.py --scene 2 --viewer # Run scene 2 + 3D viewer
+
+    # Override target images from file (must be used with --scene):
+    python demo_luycho_scenes.py --scene 2 --direct ./man0.png --reflected ./man1.png
+    python demo_luycho_scenes.py --scene 2 --direct ./man0.png           # only direct
+    python demo_luycho_scenes.py --scene 2 --reflected ./man1.png        # only reflected
 """
 
 import os
@@ -1092,6 +1097,17 @@ def make_gallery(scenes, dirs, output_root):
     print(f"\n📊 Gallery: {gp}")
 
 
+def _load_image_arg(path, label, canonical_res=512):
+    """Load a PNG/JPG image from *path*, return float32 numpy array in [0,1] at canonical_res×canonical_res."""
+    if not os.path.isfile(path):
+        print(f"❌ Error: {label} file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    img = Image.open(path).convert("RGB")
+    if img.width != canonical_res or img.height != canonical_res:
+        img = img.resize((canonical_res, canonical_res), Image.LANCZOS)
+    return np.asarray(img, dtype=np.float32) / 255.0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Demo: 4 Luycho mirror cup & saucer scenes")
@@ -1100,7 +1116,26 @@ def main():
     parser.add_argument("--tex_iter", type=int, default=500, help="Texture opt iterations")
     parser.add_argument("--viewer", action="store_true", help="Launch 3D viewer")
     parser.add_argument("--output", type=str, default="luycho_demo_outputs")
+    parser.add_argument("--direct", type=str, default=None,
+                        metavar="IMAGE",
+                        help="Path to a PNG/JPG to use as the direct-view target image "
+                             "(overrides the scene's programmatic direct_image). "
+                             "Requires --scene.")
+    parser.add_argument("--reflected", type=str, default=None,
+                        metavar="IMAGE",
+                        help="Path to a PNG/JPG to use as the reflected-view target image "
+                             "(overrides the scene's programmatic reflected_image). "
+                             "Requires --scene.")
     args = parser.parse_args()
+
+    # --direct / --reflected are only meaningful when a specific scene is selected
+    if (args.direct is not None or args.reflected is not None) and args.scene is None:
+        flagged = ", ".join(
+            f"--{f}" for f, v in [("direct", args.direct), ("reflected", args.reflected)]
+            if v is not None
+        )
+        print(f"⚠️  Warning: {flagged} have no effect without --scene and will be ignored.",
+              file=sys.stderr)
 
     print("╔════════════════════════════════════════════════════════════════╗")
     print("║  🎨 Luycho × oyow Mirror Cup & Saucer Art — Full Demo       ║")
@@ -1113,6 +1148,15 @@ def main():
     if args.scene is not None:
         idx = args.scene - 1
         if 0 <= idx < len(scenes):
+            # Apply optional image overrides before running the scene
+            if args.direct is not None:
+                print(f"  📂 Overriding direct_image with: {args.direct}")
+                scenes[idx]["direct_image"] = _load_image_arg(
+                    args.direct, "--direct", canonical_res=512)
+            if args.reflected is not None:
+                print(f"  📂 Overriding reflected_image with: {args.reflected}")
+                scenes[idx]["reflected_image"] = _load_image_arg(
+                    args.reflected, "--reflected", canonical_res=512)
             out = run_scene(scenes[idx], args.output, args.res, args.tex_iter)
             if args.viewer:
                 launch_viewer(out, scenes[idx]["saucer_color"],
