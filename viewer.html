@@ -66,9 +66,9 @@
         The textured saucer (front) deforms so that its <em>direct view</em> and its
         <em>reflection</em> through the cylindrical mirror cup simultaneously
         reproduce the two target images.<br><br>
-        <span style="color:#88aaff">■</span> Mirror cylinder: r=0.4, h=2.0<br>
-        <span style="color:#ffaa44">■</span> Saucer: 1×1, z∈[0.5,1.5]<br>
-        Camera: (0, 5, 5.5) → origin<br>
+        <span style="color:#88aaff">■</span> Mirror cylinder: r=0.4, h=2.0 (Three.js Y-axis)<br>
+        <span style="color:#ffaa44">■</span> Saucer: 1×1 footprint, Three.js z∈[0.5,1.5]<br>
+        Camera: Three.js (0, 5, 5.5) → origin<br>
         <span style="color:#88ff88">■</span> Panels: direct / reflected views
     </div>
     <div id="loading">Loading model…<br><small style="color:#6666aa">Ensure the HTTP server is running:<br>python viewer.py</small></div>
@@ -133,7 +133,9 @@ controls.update();
 
 // Camera presets
 const PRESET_DEFAULT = { pos: [0, 3.5, 5.0],   target: [0, 0.8, 1.0] };
-// Paper camera: Python(0,-5.5,5) → Three.js(0,5,5.5), look at saucer centre
+// Paper camera: Python coords (0, -5.5, 5) with z-up, converted to Three.js Y-up:
+//   Python (px, py, pz_height) → Three.js (px, pz_height, -py)
+//   → Three.js position (0, 5.0, 5.5), look toward saucer
 const PRESET_PAPER   = { pos: [0, 5.0, 5.5],   target: [0, 0.15, 1.0] };
 // Bird's eye view
 const PRESET_TOP     = { pos: [0, 6.0, 1.0],   target: [0, 0.0, 1.0] };
@@ -265,6 +267,10 @@ scene.add(bottom);
 // Image Reference Panels  (direct + reflected rendered views)
 // ---------------------------------------------------------------------------
 // Two vertical planes placed beside the saucer showing the rendered outputs.
+// Update these paths if you rename the output files.
+const DIRECT_IMG_PATH  = 'out_direct.png';
+const REFLECT_IMG_PATH = 'out_reflect.png';
+
 const imagePanels = [];
 let panelsVisible = true;
 
@@ -309,8 +315,8 @@ function createImagePanel(imgSrc, posX, posZ, label) {
 }
 
 // Direct view panel (left)  and reflected view panel (right)
-createImagePanel('out_direct.png',  -1.8, 1.0, 'Direct View');
-createImagePanel('out_reflect.png',  1.8, 1.0, 'Reflected View');
+createImagePanel(DIRECT_IMG_PATH,  -1.8, 1.0, 'Direct View');
+createImagePanel(REFLECT_IMG_PATH,  1.8, 1.0, 'Reflected View');
 
 function toggleImagePanels() {
     panelsVisible = !panelsVisible;
