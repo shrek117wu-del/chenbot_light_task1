@@ -57,16 +57,19 @@
         🖱 Scroll: Zoom<br>
         ⌨ R: Reset camera<br>
         ⌨ P: Paper camera view<br>
-        ⌨ W: Wireframe toggle
+        ⌨ T: Top-down view<br>
+        ⌨ W: Wireframe toggle<br>
+        ⌨ I: Image panels toggle
     </div>
     <div id="info">
         <strong>Scene Description</strong>
         The textured saucer (front) deforms so that its <em>direct view</em> and its
         <em>reflection</em> through the cylindrical mirror cup simultaneously
         reproduce the two target images.<br><br>
-        <span style="color:#88aaff">■</span> Mirror cylinder: r=0.4, h=2.0<br>
-        <span style="color:#ffaa44">■</span> Saucer: 1×1, height 0–1.5<br>
-        Camera: (0, 5, 5.5) → origin
+        <span style="color:#88aaff">■</span> Mirror cylinder: r=0.4, h=2.0 (Three.js Y-axis)<br>
+        <span style="color:#ffaa44">■</span> Saucer: 1×1 footprint, Three.js z∈[0.5,1.5]<br>
+        Camera: Three.js (0, 5, 5.5) → origin<br>
+        <span style="color:#88ff88">■</span> Panels: direct / reflected views
     </div>
     <div id="loading">Loading model…<br><small style="color:#6666aa">Ensure the HTTP server is running:<br>python viewer.py</small></div>
 </div>
@@ -96,6 +99,7 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
 renderer.toneMapping       = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.2;
+renderer.outputColorSpace  = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -129,8 +133,12 @@ controls.update();
 
 // Camera presets
 const PRESET_DEFAULT = { pos: [0, 3.5, 5.0],   target: [0, 0.8, 1.0] };
-// Paper camera: Python(0,-5.5,5) → Three.js(0,5,5.5), look at saucer centre
-const PRESET_PAPER   = { pos: [0, 5.0, 5.5],   target: [0, 0.15, 0.8] };
+// Paper camera: Python coords (0, -5.5, 5) with z-up, converted to Three.js Y-up:
+//   Python (px, py, pz_height) → Three.js (px, pz_height, -py)
+//   → Three.js position (0, 5.0, 5.5), look toward saucer
+const PRESET_PAPER   = { pos: [0, 5.0, 5.5],   target: [0, 0.15, 1.0] };
+// Bird's eye view
+const PRESET_TOP     = { pos: [0, 6.0, 1.0],   target: [0, 0.0, 1.0] };
 
 function setCamera(preset) {
     camera.position.set(...preset.pos);
@@ -144,6 +152,7 @@ const meshes = [];
 window.addEventListener('keydown', e => {
     if (e.key === 'r' || e.key === 'R') setCamera(PRESET_DEFAULT);
     if (e.key === 'p' || e.key === 'P') setCamera(PRESET_PAPER);
+    if (e.key === 't' || e.key === 'T') setCamera(PRESET_TOP);
     if (e.key === 'w' || e.key === 'W') {
         wireframe = !wireframe;
         meshes.forEach(m => {
@@ -153,6 +162,7 @@ window.addEventListener('keydown', e => {
             }
         });
     }
+    if (e.key === 'i' || e.key === 'I') toggleImagePanels();
 });
 
 // ---------------------------------------------------------------------------
@@ -190,38 +200,42 @@ scene.add(table);
 // ---------------------------------------------------------------------------
 // Paper: cylinder at origin, radius 0.4, height 2.0
 // Three.js Y-up: bottom at y=0, top at y=2, centred at (0,1,0)
-// The CubeCamera sits INSIDE the cylinder to capture the scene for reflections.
+// The CubeCamera captures the scene environment for reflections.
+// Placed low (y=0.3) so it better captures the saucer at z=0.5-1.5, y≈0-0.2.
 
-const cubeRT = new THREE.WebGLCubeRenderTarget(512, {
+const cubeRT = new THREE.WebGLCubeRenderTarget(1024, {
     generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter
+    minFilter: THREE.LinearMipmapLinearFilter,
+    colorSpace: THREE.SRGBColorSpace
 });
 const cubeCamera = new THREE.CubeCamera(0.05, 50, cubeRT);
-// Place the cube camera at the centre of the cylinder interior
-cubeCamera.position.set(0, 1.0, 0);
+// Place cube camera near the base of the cylinder to better see the saucer
+cubeCamera.position.set(0, 0.3, 0);
 scene.add(cubeCamera);
 
 // Inner reflective surface (seen from inside → BackSide)
 const cylGeo   = new THREE.CylinderGeometry(0.4, 0.4, 2.0, 128, 1, true);
 const mirrorMatInner = new THREE.MeshStandardMaterial({
-    envMap:    cubeRT.texture,
-    roughness: 0.0,
-    metalness: 1.0,
-    color:     0xffffff,
-    side:      THREE.BackSide
+    envMap:           cubeRT.texture,
+    envMapIntensity:  1.0,
+    roughness:        0.0,
+    metalness:        1.0,
+    color:            0xffffff,
+    side:             THREE.BackSide
 });
 const cylInner = new THREE.Mesh(cylGeo, mirrorMatInner);
 cylInner.position.set(0, 1.0, 0);
 scene.add(cylInner);
 meshes.push(cylInner);
 
-// Outer shell (FrontSide, slightly larger so it's visible from outside)
+// Outer shell – polished mirror visible from outside
 const mirrorMatOuter = new THREE.MeshStandardMaterial({
-    envMap:     cubeRT.texture,
-    roughness:  0.05,
-    metalness:  0.95,
-    color:      0xdddddd,
-    side:       THREE.FrontSide
+    envMap:           cubeRT.texture,
+    envMapIntensity:  1.0,
+    roughness:        0.02,
+    metalness:        1.0,
+    color:            0xffffff,
+    side:             THREE.FrontSide
 });
 const cylOuter = new THREE.Mesh(
     new THREE.CylinderGeometry(0.41, 0.41, 2.0, 128, 1, true),
@@ -250,8 +264,65 @@ bottom.position.set(0, 0.0, 0);
 scene.add(bottom);
 
 // ---------------------------------------------------------------------------
-// Textured Saucer  (loads saucer.obj + texture.png)
+// Image Reference Panels  (direct + reflected rendered views)
 // ---------------------------------------------------------------------------
+// Two vertical planes placed beside the saucer showing the rendered outputs.
+// Update these paths if you rename the output files.
+const DIRECT_IMG_PATH  = 'out_direct.png';
+const REFLECT_IMG_PATH = 'out_reflect.png';
+
+const imagePanels = [];
+let panelsVisible = true;
+
+function createImagePanel(imgSrc, posX, posZ, label) {
+    const texLoader2 = new THREE.TextureLoader();
+    texLoader2.load(imgSrc, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const geo = new THREE.PlaneGeometry(1.2, 1.2);
+        const mat = new THREE.MeshBasicMaterial({
+            map:         tex,
+            side:        THREE.DoubleSide,
+            transparent: false
+        });
+        const panel = new THREE.Mesh(geo, mat);
+        panel.position.set(posX, 0.7, posZ);
+        panel.rotation.y = (posX > 0) ? -Math.PI / 6 : Math.PI / 6;
+        scene.add(panel);
+        imagePanels.push(panel);
+
+        // Label sprite (simple canvas texture)
+        const canvas = document.createElement('canvas');
+        canvas.width  = 256; canvas.height = 48;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.0)';
+        ctx.fillRect(0, 0, 256, 48);
+        ctx.fillStyle = '#aaccff';
+        ctx.font      = 'bold 22px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, 128, 32);
+        const lblTex = new THREE.CanvasTexture(canvas);
+        const lblMat = new THREE.SpriteMaterial({ map: lblTex, transparent: true });
+        const sprite  = new THREE.Sprite(lblMat);
+        sprite.scale.set(1.0, 0.2, 1.0);
+        sprite.position.set(posX, 1.4, posZ);
+        scene.add(sprite);
+        imagePanels.push(sprite);
+
+        showStatus(`✓ Panel loaded: ${label}`);
+    }, undefined, () => {
+        console.warn(`Image panel not found: ${imgSrc} — run main.py first`);
+    });
+}
+
+// Direct view panel (left)  and reflected view panel (right)
+createImagePanel(DIRECT_IMG_PATH,  -1.8, 1.0, 'Direct View');
+createImagePanel(REFLECT_IMG_PATH,  1.8, 1.0, 'Reflected View');
+
+function toggleImagePanels() {
+    panelsVisible = !panelsVisible;
+    imagePanels.forEach(p => { p.visible = panelsVisible; });
+    showStatus(panelsVisible ? 'Image panels ON' : 'Image panels OFF');
+}
 const loading = document.getElementById('loading');
 const statusDiv = document.getElementById('status');
 
@@ -268,10 +339,12 @@ const mtlLoader = new MTLLoader();
 
 function buildFallbackSaucerMaterial(texture) {
     return new THREE.MeshStandardMaterial({
-        map:       texture,
-        roughness: 0.5,
-        metalness: 0.0,
-        side:      THREE.DoubleSide
+        map:              texture,
+        roughness:        0.6,
+        metalness:        0.0,
+        side:             THREE.DoubleSide,
+        envMap:           cubeRT.texture,
+        envMapIntensity:  0.15   // subtle environment reflection on saucer
     });
 }
 
@@ -346,14 +419,16 @@ scene.add(new THREE.AxesHelper(0.5));
 function animate() {
     requestAnimationFrame(animate);
 
-    // Update cube-map: hide cylinder so it doesn't occlude its own reflection
+    // Update cube-map: hide cylinder surfaces so they don't block the capture
     cylInner.visible = false;
     cylOuter.visible = false;
     rim.visible      = false;
+    bottom.visible   = false;
     cubeCamera.update(renderer, scene);
     cylInner.visible = true;
     cylOuter.visible = true;
     rim.visible      = true;
+    bottom.visible   = true;
 
     controls.update();
     renderer.render(scene, camera);
