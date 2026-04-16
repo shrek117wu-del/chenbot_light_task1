@@ -1,1 +1,0 @@
-"""Scene definitions for paper reproduction."""

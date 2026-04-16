@@ -1,288 +1,166 @@
 """
-Saucer geometry representation and optimization.
-
-The saucer surface is represented as a base shape plus a height-field
-displacement.  Optimization refines this height field so that both the
-direct view and the reflected view match their target images.
-
-Key techniques from the paper:
-  - Black-white shape enhancement
-  - Sparse spike movement for fine geometric detail
+Geometry utilities: reflection computation and heightfield triangle mesh generation.
 """
-
 import numpy as np
-from scipy.ndimage import gaussian_filter
-from typing import Optional, Tuple
+import torch
+from scipy.optimize import root_scalar
 
 
-class SaucerGeometry:
+# ---------------------------------------------------------------------------
+# 2-D cylindrical mirror reflection
+# ---------------------------------------------------------------------------
+
+def compute_reflection_2d(P, Q, r=0.4):
     """
-    Height-field-based saucer geometry.
+    Given:
+      P (2-D camera position, in the horizontal plane),
+      Q (2-D saucer point),
+      cylindrical mirror radius r,
+    find the 2-D position R of the virtual image of Q as seen from P.
 
-    Attributes
-    ----------
-    resolution : int
-        Grid resolution.
-    saucer_radius : float
-    cup_radius : float
-    base_shape : (res, res) ndarray
-        The user-supplied base shape (height map, 0 for flat).
-    displacement : (res, res) ndarray
-        Learned/optimized displacement on top of base_shape.
+    The algorithm searches for the reflection point T on the circle |T|=r such
+    that ∠PTV = ∠QTV (angle of incidence = angle of reflection).
+    This is equivalent to the bisector of (P-T) and (Q-T) being parallel to
+    the normal T at the circle.
     """
+    dist_Q = np.linalg.norm(Q)
+    if dist_Q <= r:
+        return Q.copy()   # inside the mirror (shouldn't happen)
 
-    def __init__(
-        self,
-        resolution: int = 256,
-        saucer_radius: float = 3.0,
-        cup_radius: float = 1.0,
-        base_shape: Optional[np.ndarray] = None,
-        max_displacement: float = 0.3,
-    ):
-        self.resolution = resolution
-        self.saucer_radius = saucer_radius
-        self.cup_radius = cup_radius
-        self.max_displacement = max_displacement
+    def objective(theta_T):
+        T      = r * np.array([np.cos(theta_T), np.sin(theta_T)])
+        vec_TP = P - T
+        vec_TQ = Q - T
+        n      = T / r   # outward normal
+        dP = vec_TP / (np.linalg.norm(vec_TP) + 1e-10)
+        dQ = vec_TQ / (np.linalg.norm(vec_TQ) + 1e-10)
+        # Snell condition: (dP + dQ) parallel to n  →  cross product = 0
+        bis = dP + dQ
+        return bis[0] * n[1] - bis[1] * n[0]
 
-        if base_shape is not None:
-            from skimage.transform import resize
+    # Coarse scan to find sign changes
+    thetas = np.linspace(-np.pi, np.pi, 720, endpoint=False)
+    vals   = [objective(th) for th in thetas]
 
-            self.base_shape = resize(
-                base_shape, (resolution, resolution), anti_aliasing=True
-            )
+    roots = []
+    for i in range(len(thetas) - 1):
+        if vals[i] * vals[i + 1] <= 0.0:
+            try:
+                res = root_scalar(objective,
+                                  bracket=[thetas[i], thetas[i + 1]],
+                                  method='brentq', xtol=1e-9)
+                if res.converged:
+                    roots.append(res.root)
+            except Exception:
+                pass
+
+    if not roots:
+        return Q.copy()
+
+    # Among valid roots pick the one where both P and Q are on the same side
+    # of the tangent (both outside the circle) – i.e. the physically valid one
+    best = None
+    for rt in roots:
+        T     = r * np.array([np.cos(rt), np.sin(rt)])
+        n     = T / r
+        vec_TP = P - T
+        vec_TQ = Q - T
+        if np.dot(vec_TP, n) > 0 and np.dot(vec_TQ, n) > 0:
+            best = rt
+            break
+
+    if best is None:
+        best = roots[0]
+
+    T          = r * np.array([np.cos(best), np.sin(best)])
+    tan_dir    = np.array([-np.sin(best), np.cos(best)])  # tangent at T
+    n          = T / r
+    vec_TQ     = Q - T
+    # Reflect vec_TQ across the tangent (flip normal component)
+    proj_tan   = np.dot(vec_TQ, tan_dir) * tan_dir
+    proj_norm  = np.dot(vec_TQ, n)       * n
+    vec_TR     = proj_tan - proj_norm    # reflected direction
+    R          = T + vec_TR
+    return R
+
+
+def precompute_reflection_grid(grid_x, grid_y, P_2d, r=0.4):
+    """
+    For an (H, W) saucer heightfield with top-view 2-D coordinates
+    (grid_x, grid_y), compute the reflected positions (R_x, R_y) for every
+    vertex using cylindrical-mirror reflection.
+    """
+    H, W = grid_x.shape
+    R_x  = np.zeros_like(grid_x)
+    R_y  = np.zeros_like(grid_y)
+    for i in range(H):
+        for j in range(W):
+            q    = np.array([grid_x[i, j], grid_y[i, j]])
+            R    = compute_reflection_2d(P_2d, q, r=r)
+            R_x[i, j] = R[0]
+            R_y[i, j] = R[1]
+    return R_x, R_y
+
+
+# ---------------------------------------------------------------------------
+# Triangle mesh generation for a heightfield grid
+# ---------------------------------------------------------------------------
+
+def get_grid_triangles(H, W):
+    """
+    Generate CCW triangle indices for a heightfield of shape (H, W).
+    Returns int32 array of shape (2*(H-1)*(W-1), 3).
+    """
+    tris = []
+    for i in range(H - 1):
+        for j in range(W - 1):
+            a = i * W + j
+            b = i * W + j + 1
+            c = (i + 1) * W + j
+            d = (i + 1) * W + j + 1
+            tris.append([a, b, c])  # lower-left triangle
+            tris.append([b, d, c])  # upper-right triangle
+    return np.array(tris, dtype=np.int32)
+
+
+# ---------------------------------------------------------------------------
+# Per-face UV assignment (for the texturing stage, Section 3.4.2)
+# ---------------------------------------------------------------------------
+
+def assign_face_uvs(face_uv_d, face_uv_r, face_vis_d, face_vis_r):
+    """
+    Given the projected 2-D coords of each triangular face in the direct view
+    and in the reflected view, assign texture UVs following Section 3.4.2:
+
+      Case 1: visible only in direct  → UV from direct projection
+      Case 2: visible only in reflect → UV from reflect projection
+      Case 3: visible in both        → UV from reflect projection
+              (pixel in Id modified to average of Id and Ir colours)
+      Case 4: invisible in both       → UV is arbitrary (zeros)
+
+    face_uv_d / face_uv_r : [F, 3, 2] NDC coords of triangle vertices
+    face_vis_d / face_vis_r: [F] boolean – triangle visible in that view
+
+    Returns face_uvs [F, 3, 2] and face_view [F] int  (1/2/3/4)
+    """
+    F = face_uv_d.shape[0]
+    face_uvs  = np.zeros((F, 3, 2), dtype=np.float32)
+    face_view = np.zeros(F, dtype=np.int32)
+
+    for fi in range(F):
+        vd = face_vis_d[fi]
+        vr = face_vis_r[fi]
+        if vd and not vr:
+            face_uvs[fi]  = face_uv_d[fi]
+            face_view[fi] = 1
+        elif vr and not vd:
+            face_uvs[fi]  = face_uv_r[fi]
+            face_view[fi] = 2
+        elif vd and vr:
+            face_uvs[fi]  = face_uv_r[fi]
+            face_view[fi] = 3
         else:
-            self.base_shape = np.zeros((resolution, resolution))
+            face_uvs[fi]  = face_uv_d[fi]  # arbitrary
+            face_view[fi] = 4
 
-        self.displacement = np.zeros((resolution, resolution))
-        self._build_mask()
-
-    def _build_mask(self):
-        """Mask: 1 inside saucer annulus, 0 otherwise."""
-        u = np.linspace(-1, 1, self.resolution)
-        v = np.linspace(-1, 1, self.resolution)
-        uu, vv = np.meshgrid(u, v, indexing="xy")
-        r = np.sqrt(uu ** 2 + vv ** 2)
-        ratio_outer = self.saucer_radius / self.saucer_radius  # == 1
-        ratio_inner = self.cup_radius / self.saucer_radius
-        self.mask = ((r <= ratio_outer) & (r >= ratio_inner)).astype(np.float64)
-
-    @property
-    def heightfield(self) -> np.ndarray:
-        return self.base_shape + self.displacement * self.mask
-
-    def compute_normals(self) -> np.ndarray:
-        """Finite-difference surface normals from height field."""
-        h = self.heightfield
-        dx = np.zeros_like(h)
-        dy = np.zeros_like(h)
-        dx[:, 1:-1] = (h[:, 2:] - h[:, :-2]) / 2.0
-        dy[1:-1, :] = (h[2:, :] - h[:-2, :]) / 2.0
-        # Normal = (-dh/dx, -dh/dy, 1) normalized
-        nz = np.ones_like(h)
-        length = np.sqrt(dx ** 2 + dy ** 2 + nz ** 2)
-        normals = np.stack([-dx / length, -dy / length, nz / length], axis=-1)
-        return normals
-
-    def to_mesh_vertices(self) -> np.ndarray:
-        """Generate (res*res, 3) vertex positions."""
-        u = np.linspace(-self.saucer_radius, self.saucer_radius, self.resolution)
-        v = np.linspace(-self.saucer_radius, self.saucer_radius, self.resolution)
-        uu, vv = np.meshgrid(u, v, indexing="xy")
-        zz = self.heightfield
-        return np.stack([uu, vv, zz], axis=-1).reshape(-1, 3)
-
-    def to_mesh_faces(self) -> np.ndarray:
-        """Generate triangle face indices for grid mesh."""
-        res = self.resolution
-        faces = []
-        for j in range(res - 1):
-            for i in range(res - 1):
-                idx = j * res + i
-                faces.append([idx, idx + 1, idx + res])
-                faces.append([idx + 1, idx + res + 1, idx + res])
-        return np.array(faces, dtype=np.int32)
-
-    def to_mesh_uvs(self) -> np.ndarray:
-        """Generate UV coordinates for the mesh."""
-        u = np.linspace(0, 1, self.resolution)
-        v = np.linspace(0, 1, self.resolution)
-        uu, vv = np.meshgrid(u, v, indexing="xy")
-        return np.stack([uu, vv], axis=-1).reshape(-1, 2)
-
-
-def optimize_geometry(
-    geometry: SaucerGeometry,
-    direct_target: np.ndarray,
-    reflected_target: np.ndarray,
-    reflection_map_fn,
-    n_iterations: int = 200,
-    lr: float = 0.01,
-    lambda_smooth: float = 0.1,
-    lambda_direct: float = 1.0,
-    lambda_reflected: float = 1.0,
-    verbose: bool = True,
-) -> dict:
-    """
-    Optimize saucer displacement to simultaneously match direct and
-    reflected target images.
-
-    Uses gradient descent with finite-difference gradients.
-
-    Parameters
-    ----------
-    geometry : SaucerGeometry
-    direct_target : (H, W) or (H, W, 3) target for direct view
-    reflected_target : (H, W) or (H, W, 3) target for reflected view
-    reflection_map_fn : callable
-        Given heightfield, returns reflected image.
-    n_iterations : int
-    lr : float
-    lambda_smooth : float
-        Smoothness regularization weight.
-    lambda_direct, lambda_reflected : float
-
-    Returns
-    -------
-    info : dict with 'losses', 'geometry'
-    """
-
-    def to_gray(img):
-        if img.ndim == 3:
-            return np.mean(img, axis=-1)
-        return img
-
-    direct_gray = to_gray(direct_target)
-    reflected_gray = to_gray(reflected_target)
-
-    res = geometry.resolution
-    losses = []
-    eps = 1e-4
-
-    for it in range(n_iterations):
-        # Forward pass
-        hf = geometry.heightfield
-
-        # Direct view: the heightfield itself encodes a shading pattern
-        # via surface normals (darker where steeper)
-        normals = geometry.compute_normals()
-        direct_shading = normals[..., 2]  # cos(angle) ≈ brightness
-
-        # Reflected view via the mapping function
-        reflected_img = reflection_map_fn(hf)
-
-        # Losses
-        loss_direct = lambda_direct * np.mean(
-            (direct_shading - direct_gray) ** 2 * geometry.mask
-        )
-        loss_reflected = lambda_reflected * np.mean(
-            (reflected_img - reflected_gray) ** 2
-        )
-
-        # Smoothness
-        lap = (
-            np.roll(geometry.displacement, 1, 0)
-            + np.roll(geometry.displacement, -1, 0)
-            + np.roll(geometry.displacement, 1, 1)
-            + np.roll(geometry.displacement, -1, 1)
-            - 4.0 * geometry.displacement
-        )
-        loss_smooth = lambda_smooth * np.mean(lap ** 2)
-        loss = loss_direct + loss_reflected + loss_smooth
-
-        losses.append(loss)
-        if verbose and it % 20 == 0:
-            print(
-                f"Iter {it:4d} | total={loss:.6f}  direct={loss_direct:.6f}"
-                f"  reflected={loss_reflected:.6f}  smooth={loss_smooth:.6f}"
-            )
-
-        # Gradient via finite differences (per-pixel)
-        grad = np.zeros_like(geometry.displacement)
-        # Stochastic subset for efficiency
-        n_samples = min(res * res, 2000)
-        idx = np.random.choice(res * res, n_samples, replace=False)
-        rows, cols = np.unravel_index(idx, (res, res))
-
-        for r, c in zip(rows, cols):
-            if geometry.mask[r, c] < 0.5:
-                continue
-            old_val = geometry.displacement[r, c]
-            # Plus
-            geometry.displacement[r, c] = old_val + eps
-            hf_p = geometry.heightfield
-            normals_p = geometry.compute_normals()
-            ds_p = normals_p[..., 2]
-            ri_p = reflection_map_fn(hf_p)
-            loss_p = lambda_direct * np.mean(
-                (ds_p - direct_gray) ** 2 * geometry.mask
-            ) + lambda_reflected * np.mean((ri_p - reflected_gray) ** 2)
-
-            # Minus
-            geometry.displacement[r, c] = old_val - eps
-            hf_m = geometry.heightfield
-            normals_m = geometry.compute_normals()
-            ds_m = normals_m[..., 2]
-            ri_m = reflection_map_fn(hf_m)
-            loss_m = lambda_direct * np.mean(
-                (ds_m - direct_gray) ** 2 * geometry.mask
-            ) + lambda_reflected * np.mean((ri_m - reflected_gray) ** 2)
-
-            grad[r, c] = (loss_p - loss_m) / (2.0 * eps)
-            geometry.displacement[r, c] = old_val
-
-        # Smooth gradient
-        grad = gaussian_filter(grad, sigma=1.0)
-
-        # Update
-        geometry.displacement -= lr * grad * geometry.mask
-
-        # Clamp
-        geometry.displacement = np.clip(
-            geometry.displacement,
-            -geometry.max_displacement,
-            geometry.max_displacement,
-        )
-
-    return {"losses": losses, "geometry": geometry}
-
-
-def black_white_enhancement(
-    displacement: np.ndarray, threshold: float = 0.5
-) -> np.ndarray:
-    """
-    Black-white shape enhancement from the paper: sharpen the height
-    field to create crisper shading transitions.
-    """
-    enhanced = displacement.copy()
-    med = np.median(np.abs(displacement[displacement != 0]))
-    if med < 1e-8:
-        return enhanced
-    normalized = displacement / (med + 1e-8)
-    # Sigmoid-like sharpening
-    enhanced = np.tanh(threshold * normalized) * med
-    return enhanced
-
-
-def sparse_spike_movement(
-    displacement: np.ndarray,
-    mask: np.ndarray,
-    n_spikes: int = 50,
-    spike_amplitude: float = 0.1,
-) -> np.ndarray:
-    """
-    Sparse spike movement: add localized geometric features for encoding
-    fine detail (as described in the paper).
-    """
-    result = displacement.copy()
-    res = displacement.shape[0]
-    valid_idx = np.argwhere(mask > 0.5)
-    if len(valid_idx) == 0:
-        return result
-    chosen = valid_idx[np.random.choice(len(valid_idx), min(n_spikes, len(valid_idx)), replace=False)]
-    for r, c in chosen:
-        sigma = np.random.uniform(1.0, 3.0)
-        amp = np.random.uniform(-spike_amplitude, spike_amplitude)
-        y, x = np.ogrid[-r : res - r, -c : res - c]
-        gauss = np.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2))
-        result += amp * gauss * mask
-    return result
+    return face_uvs, face_view

@@ -1,1 +1,0 @@
-"""Mirror Cup and Saucer Art — core algorithms."""

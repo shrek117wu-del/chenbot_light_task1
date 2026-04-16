@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mirror Cup and Saucer Art – 3D Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #0d0d1a; font-family: 'Segoe UI', system-ui, sans-serif; color: #e0e0ff; }
+        canvas { display: block; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #title {
+            position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+            font-size: 18px; font-weight: 700; letter-spacing: 2px;
+            text-shadow: 0 0 20px #8888ff;
+            background: rgba(0,0,0,0.45); padding: 6px 22px; border-radius: 30px;
+            border: 1px solid rgba(120,120,255,0.3);
+        }
+        #controls {
+            position: absolute; bottom: 22px; left: 22px;
+            background: rgba(0,0,0,0.65); border: 1px solid rgba(120,120,255,0.25);
+            border-radius: 12px; padding: 14px 18px;
+            font-size: 13px; line-height: 1.8;
+            backdrop-filter: blur(8px);
+        }
+        #controls strong { color: #aaaaff; display: block; margin-bottom: 4px; font-size: 14px; }
+        #info {
+            position: absolute; bottom: 22px; right: 22px;
+            background: rgba(0,0,0,0.65); border: 1px solid rgba(120,120,255,0.25);
+            border-radius: 12px; padding: 14px 18px;
+            font-size: 13px; line-height: 1.8;
+            backdrop-filter: blur(8px); max-width: 280px;
+        }
+        #info strong { color: #aaaaff; display: block; margin-bottom: 4px; }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            font-size: 15px; color: #aaaaff;
+            background: rgba(0,0,0,0.8); padding: 20px 36px; border-radius: 12px;
+            border: 1px solid #4444aa; text-align: center; max-width: 360px;
+        }
+        #status {
+            position: absolute; top: 70px; left: 50%; transform: translateX(-50%);
+            font-size: 12px; color: #88ff88;
+            background: rgba(0,0,0,0.55); padding: 4px 16px; border-radius: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+<div id="overlay">
+    <div id="title">Computational Mirror Cup &amp; Saucer Art</div>
+    <div id="status" id="status"></div>
+    <div id="controls">
+        <strong>Controls</strong>
+        🖱 Left drag: Rotate<br>
+        🖱 Right drag: Pan<br>
+        🖱 Scroll: Zoom<br>
+        ⌨ R: Reset camera<br>
+        ⌨ P: Paper camera view<br>
+        ⌨ W: Wireframe toggle
+    </div>
+    <div id="info">
+        <strong>Scene Description</strong>
+        The textured saucer (front) deforms so that its <em>direct view</em> and its
+        <em>reflection</em> through the cylindrical mirror cup simultaneously
+        reproduce the two target images.<br><br>
+        <span style="color:#88aaff">■</span> Mirror cylinder: r=0.4, h=2.0<br>
+        <span style="color:#ffaa44">■</span> Saucer: 1×1, height 0–1.5<br>
+        Camera: (0, 5, 5.5) → origin
+    </div>
+    <div id="loading">Loading model…<br><small style="color:#6666aa">Ensure the HTTP server is running:<br>python viewer.py</small></div>
+</div>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE            from 'three';
+import { OrbitControls }     from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader }         from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader }         from 'three/addons/loaders/MTLLoader.js';
+
+// ---------------------------------------------------------------------------
+// Renderer & Scene
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+renderer.toneMapping       = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0d1a);
+scene.fog = new THREE.FogExp2(0x0d0d1a, 0.04);
+
+// ---------------------------------------------------------------------------
+// Coordinate system note
+// ---------------------------------------------------------------------------
+// Python world:  camera at (0, -5.5, 5),  z-up,  saucer at y∈[-1.5,-0.5]
+// Three.js Y-up: transform (px, py, pz) → (px, pz, -py)
+//   camera:  (0, 5, 5.5)
+//   saucer:  z∈[0.5,1.5]  (in front of cylinder)
+//   cylinder: at (0,0,0) — bottom at y=0, top at y=2
+// This matches exactly what export_utils.py writes into saucer.obj.
+
+// ---------------------------------------------------------------------------
+// Camera
+// ---------------------------------------------------------------------------
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.05, 200);
+// Default: slightly above and back to see full scene
+camera.position.set(0, 3.5, 5.0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0.8, 1.0);   // look at cylinder+saucer centre
+controls.minDistance = 0.3;
+controls.maxDistance = 30;
+controls.update();
+
+// Camera presets
+const PRESET_DEFAULT = { pos: [0, 3.5, 5.0],   target: [0, 0.8, 1.0] };
+// Paper camera: Python(0,-5.5,5) → Three.js(0,5,5.5), look at saucer centre
+const PRESET_PAPER   = { pos: [0, 5.0, 5.5],   target: [0, 0.15, 0.8] };
+
+function setCamera(preset) {
+    camera.position.set(...preset.pos);
+    controls.target.set(...preset.target);
+    controls.update();
+}
+
+let wireframe = false;
+const meshes = [];
+
+window.addEventListener('keydown', e => {
+    if (e.key === 'r' || e.key === 'R') setCamera(PRESET_DEFAULT);
+    if (e.key === 'p' || e.key === 'P') setCamera(PRESET_PAPER);
+    if (e.key === 'w' || e.key === 'W') {
+        wireframe = !wireframe;
+        meshes.forEach(m => {
+            if (m.material) {
+                const mats = Array.isArray(m.material) ? m.material : [m.material];
+                mats.forEach(mat => { mat.wireframe = wireframe; });
+            }
+        });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Lights
+// ---------------------------------------------------------------------------
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+const sun = new THREE.DirectionalLight(0xfff8e8, 1.4);
+sun.position.set(4, 10, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.1;
+sun.shadow.camera.far  = 40;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -5;
+sun.shadow.camera.right = sun.shadow.camera.top   =  5;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x88aaff, 0.5);
+fill.position.set(-4, 4, -2);
+scene.add(fill);
+
+// ---------------------------------------------------------------------------
+// Ground / table
+// ---------------------------------------------------------------------------
+const tableGeo = new THREE.PlaneGeometry(10, 10);
+const tableMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.85, metalness: 0.1 });
+const table    = new THREE.Mesh(tableGeo, tableMat);
+table.rotation.x = -Math.PI / 2;
+table.position.y = -0.01;
+table.receiveShadow = true;
+scene.add(table);
+
+// ---------------------------------------------------------------------------
+// Mirror Cylinder
+// ---------------------------------------------------------------------------
+// Paper: cylinder at origin, radius 0.4, height 2.0
+// Three.js Y-up: bottom at y=0, top at y=2, centred at (0,1,0)
+// The CubeCamera sits INSIDE the cylinder to capture the scene for reflections.
+
+const cubeRT = new THREE.WebGLCubeRenderTarget(512, {
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter
+});
+const cubeCamera = new THREE.CubeCamera(0.05, 50, cubeRT);
+// Place the cube camera at the centre of the cylinder interior
+cubeCamera.position.set(0, 1.0, 0);
+scene.add(cubeCamera);
+
+// Inner reflective surface (seen from inside → BackSide)
+const cylGeo   = new THREE.CylinderGeometry(0.4, 0.4, 2.0, 128, 1, true);
+const mirrorMatInner = new THREE.MeshStandardMaterial({
+    envMap:    cubeRT.texture,
+    roughness: 0.0,
+    metalness: 1.0,
+    color:     0xffffff,
+    side:      THREE.BackSide
+});
+const cylInner = new THREE.Mesh(cylGeo, mirrorMatInner);
+cylInner.position.set(0, 1.0, 0);
+scene.add(cylInner);
+meshes.push(cylInner);
+
+// Outer shell (FrontSide, slightly larger so it's visible from outside)
+const mirrorMatOuter = new THREE.MeshStandardMaterial({
+    envMap:     cubeRT.texture,
+    roughness:  0.05,
+    metalness:  0.95,
+    color:      0xdddddd,
+    side:       THREE.FrontSide
+});
+const cylOuter = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.41, 0.41, 2.0, 128, 1, true),
+    mirrorMatOuter
+);
+cylOuter.position.set(0, 1.0, 0);
+cylOuter.castShadow = true;
+scene.add(cylOuter);
+meshes.push(cylOuter);
+
+// Cup rim (top ring)
+const rimGeo = new THREE.RingGeometry(0.38, 0.43, 128);
+const rimMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.1 });
+const rim    = new THREE.Mesh(rimGeo, rimMat);
+rim.rotation.x = -Math.PI / 2;
+rim.position.set(0, 2.0, 0);
+scene.add(rim);
+meshes.push(rim);
+
+// Cup bottom disk
+const bottomGeo = new THREE.CircleGeometry(0.4, 64);
+const bottomMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
+const bottom    = new THREE.Mesh(bottomGeo, bottomMat);
+bottom.rotation.x = Math.PI / 2;
+bottom.position.set(0, 0.0, 0);
+scene.add(bottom);
+
+// ---------------------------------------------------------------------------
+// Textured Saucer  (loads saucer.obj + texture.png)
+// ---------------------------------------------------------------------------
+const loading = document.getElementById('loading');
+const statusDiv = document.getElementById('status');
+
+function showStatus(msg, color='#88ff88') {
+    statusDiv.textContent = msg;
+    statusDiv.style.color = color;
+    statusDiv.style.display = 'block';
+    setTimeout(() => { statusDiv.style.display = 'none'; }, 4000);
+}
+
+const texLoader = new THREE.TextureLoader();
+const objLoader = new OBJLoader();
+const mtlLoader = new MTLLoader();
+
+function buildFallbackSaucerMaterial(texture) {
+    return new THREE.MeshStandardMaterial({
+        map:       texture,
+        roughness: 0.5,
+        metalness: 0.0,
+        side:      THREE.DoubleSide
+    });
+}
+
+function addSaucerToScene(obj, mat) {
+    obj.traverse(child => {
+        if (child.isMesh) {
+            child.material = mat;
+            child.castShadow    = true;
+            child.receiveShadow = true;
+            meshes.push(child);
+        }
+    });
+    scene.add(obj);
+    loading.style.display = 'none';
+    showStatus('✓ Saucer loaded with texture');
+    console.log('Saucer loaded OK.');
+}
+
+function loadWithTexture() {
+    texLoader.load(
+        'texture.png',
+        (texture) => {
+            texture.colorSpace      = THREE.SRGBColorSpace;
+            texture.anisotropy      = renderer.capabilities.getMaxAnisotropy();
+            texture.minFilter       = THREE.LinearMipmapLinearFilter;
+            texture.generateMipmaps = true;
+            const mat = buildFallbackSaucerMaterial(texture);
+
+            objLoader.load(
+                'saucer.obj',
+                obj => addSaucerToScene(obj, mat),
+                xhr => { loading.textContent = `Loading saucer… ${(xhr.loaded/xhr.total*100|0)}%`; },
+                err => {
+                    console.error('OBJ load error:', err);
+                    loading.textContent = '⚠ saucer.obj not found.\nRun: python main.py --exp 0 --no_viewer first.';
+                    showStatus('⚠ saucer.obj missing', '#ffaa44');
+                }
+            );
+        },
+        undefined,
+        (err) => {
+            // texture.png failed → load OBJ with vertex-colour fallback
+            console.warn('texture.png load failed, using vertex-colour fallback.', err);
+            showStatus('⚠ texture.png missing – using vertex colours', '#ffaa44');
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0xddbb88, roughness: 0.5, metalness: 0.0,
+                side: THREE.DoubleSide, wireframe: false
+            });
+            objLoader.load(
+                'saucer.obj',
+                obj => { addSaucerToScene(obj, mat); showStatus('Saucer loaded (no texture)', '#ffaa44'); },
+                null,
+                err2 => {
+                    loading.innerHTML = '⚠ No model files found.<br>Run: <code>python main.py --exp 0 --no_viewer</code>';
+                    console.error('No OBJ either:', err2);
+                }
+            );
+        }
+    );
+}
+
+loadWithTexture();
+
+// ---------------------------------------------------------------------------
+// Axes helper (small, at origin)
+// ---------------------------------------------------------------------------
+scene.add(new THREE.AxesHelper(0.5));
+
+// ---------------------------------------------------------------------------
+// Animation loop
+// ---------------------------------------------------------------------------
+function animate() {
+    requestAnimationFrame(animate);
+
+    // Update cube-map: hide cylinder so it doesn't occlude its own reflection
+    cylInner.visible = false;
+    cylOuter.visible = false;
+    rim.visible      = false;
+    cubeCamera.update(renderer, scene);
+    cylInner.visible = true;
+    cylOuter.visible = true;
+    rim.visible      = true;
+
+    controls.update();
+    renderer.render(scene, camera);
+}
+animate();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
