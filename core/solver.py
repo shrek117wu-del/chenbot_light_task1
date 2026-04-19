@@ -107,6 +107,11 @@ def barrier_loss(h, c, z_orig, delta):
     return mu * (h_term + c_term)
 
 
+def _check_convergence(prev_loss, curr_loss, tol):
+    """Return True if relative change of loss < tol (paper Section 3.3)."""
+    return abs(prev_loss - curr_loss) / (abs(prev_loss) + 1e-10) < tol
+
+
 # ---------------------------------------------------------------------------
 # Main solver
 # ---------------------------------------------------------------------------
@@ -394,7 +399,7 @@ class MirrorArtSolver:
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
             # Convergence check (paper Section 3.3)
-            if i > 20 and abs(prev_loss - total) / (abs(prev_loss) + 1e-10) < convergence_tol:
+            if i > 20 and _check_convergence(prev_loss, total, convergence_tol):
                 print(f"  converged at iter {i} (rel_change < {convergence_tol})")
                 break
             prev_loss = total
@@ -407,7 +412,7 @@ class MirrorArtSolver:
             total, vis = one_iter(1e-7, w2, self.blurred_Ied_S, self.blurred_Ier_S)
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
-            if i > 20 and abs(prev_loss - total) / (abs(prev_loss) + 1e-10) < convergence_tol:
+            if i > 20 and _check_convergence(prev_loss, total, convergence_tol):
                 print(f"  converged at iter {i} (rel_change < {convergence_tol})")
                 break
             prev_loss = total
@@ -471,7 +476,7 @@ class MirrorArtSolver:
             loss_val = phi.item()
             if i % 50 == 0:
                 print(f"  iter {i:4d}  phi={loss_val:.4f}")
-            if i > 20 and abs(prev_loss - loss_val) / (abs(prev_loss) + 1e-10) < convergence_tol:
+            if i > 20 and _check_convergence(prev_loss, loss_val, convergence_tol):
                 print(f"  converged at iter {i} (rel_change < {convergence_tol})")
                 break
             prev_loss = loss_val
@@ -523,7 +528,7 @@ class MirrorArtSolver:
             loss_val = loss.item()
             if i % 50 == 0:
                 print(f"  iter {i:4d}  loss={loss_val:.4f}")
-            if i > 20 and abs(prev_loss - loss_val) / (abs(prev_loss) + 1e-10) < convergence_tol:
+            if i > 20 and _check_convergence(prev_loss, loss_val, convergence_tol):
                 print(f"  converged at iter {i} (rel_change < {convergence_tol})")
                 break
             prev_loss = loss_val

@@ -29,7 +29,6 @@ from experiments import (
     ALL_PAPER_EXPERIMENTS, get_paper_experiment,
 )
 from main import run_pipeline
-from export_utils import export_obj_and_texture
 
 
 def run_single(cfg, output_dir, resolution, render_size, iters1, iters2, iters3):
@@ -64,15 +63,10 @@ def run_single(cfg, output_dir, resolution, render_size, iters1, iters2, iters3)
     for f in ["out_direct.png", "out_reflect.png",
               "out_stage1_direct.png", "out_stage1_reflect.png",
               "out_stage2_direct.png", "out_stage2_reflect.png",
-              "saucer.obj", "texture.png", "cup.obj"]:
+              "saucer.obj", "saucer.mtl", "texture.png", "cup.obj"]:
         if os.path.exists(f):
             shutil.move(f, os.path.join(exp_dir, f))
 
-    # Also export the cup OBJ
-    export_obj_and_texture(X, Y, H, C,
-                           obj_path=os.path.join(exp_dir, "saucer.obj"),
-                           tex_path=os.path.join(exp_dir, "texture.png"),
-                           cup_type=cup)
     return exp_dir
 
 

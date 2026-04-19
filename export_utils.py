@@ -259,7 +259,13 @@ def export_obj_and_texture(grid_x, grid_y, h_grid, color_grid,
     elif cup_type == "ellipse":
         export_ellipse_cylinder_obj(a=cup_a, b=cup_b, obj_path=cup_path)
     elif cup_type.startswith("ngon"):
-        n = int(cup_type[4:])
+        suffix = cup_type[4:]
+        if not suffix or not suffix.isdigit():
+            raise ValueError(
+                f"Invalid cup_type '{cup_type}'. Expected format: 'ngon4', 'ngon6', etc.")
+        n = int(suffix)
+        if n < 3:
+            raise ValueError(f"n-gon prism requires n >= 3, got n={n}")
         export_ngon_prism_obj(n, radius=cup_radius, obj_path=cup_path)
     else:
         # Default to cylinder
