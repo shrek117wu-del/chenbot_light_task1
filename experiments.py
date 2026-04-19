@@ -58,6 +58,15 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
         Z = 0.8 * R ** 2   # parabolic bowl, height up to ~0.8*0.5^2=0.2
 
+    elif shape_type == "dish":
+        # Realistic dish/plate shape: flat center with gently raised edges
+        # This matches the paper's typical saucer reference shape (Figure 1)
+        R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
+        R_max = np.sqrt(0.5 ** 2 + 0.5 ** 2)
+        r_norm = R / R_max
+        # Flat center, raised edges (like a real saucer/dish)
+        Z = 0.15 * np.clip(r_norm - 0.5, 0, None) ** 2 / 0.25
+
     elif shape_type == "shallow_bowl":
         R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
         Z = 0.4 * R ** 2
@@ -72,10 +81,15 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         Z = 0.15 * (X ** 2 - (Y + 1.0) ** 2)
         Z = Z - Z.min()   # shift to non-negative
 
+    elif shape_type == "wave":
+        # Wave shape similar to the artist's design (paper Figure 2)
+        # Sinusoidal waves in both X and Y directions
+        Z = 0.04 * (np.sin(8.0 * X) * np.cos(6.0 * (Y + 1.0)) + 1.0)
+
     else:
         raise ValueError(f"Unknown shape_type: '{shape_type}'. "
-                         "Choose from: plane, random, tabula_scalata, saucer, "
-                         "shallow_bowl, cone, saddle")
+                         "Choose from: plane, random, tabula_scalata, saucer, dish, "
+                         "shallow_bowl, cone, saddle, wave")
 
     return X, Y, Z
 
@@ -262,8 +276,9 @@ def get_paper_experiment(exp_id=1, output_dir="data"):
 # -----------------------------------------------------------------------
 # Matching the paper's Figures 15-21 experiments.
 
-PAPER_SHAPES = ["plane", "random", "tabula_scalata", "saucer", "shallow_bowl"]
-"""The five saucer shapes tested in the paper (Figure 15)."""
+PAPER_SHAPES = ["plane", "random", "tabula_scalata", "saucer", "shallow_bowl",
+                "dish", "wave"]
+"""The saucer shapes tested in the paper (Figure 15 and beyond)."""
 
 PAPER_CUP_TYPES = ["cylinder", "ngon4", "ngon6", "ngon8", "ellipse"]
 """Mirror cup types from paper (Section 3.5, Figure 19)."""

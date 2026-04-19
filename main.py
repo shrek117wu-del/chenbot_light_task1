@@ -132,8 +132,8 @@ def parse_args():
     p.add_argument("--exp",    type=int,   default=1,
                    help="Experiment id: 0=synthetic, 1=paper-1, 2=paper-2")
     p.add_argument("--shape",  type=str,   default="saucer",
-                   help="Saucer shape: plane|saucer|random|tabula_scalata|"
-                        "shallow_bowl|cone|saddle")
+                   help="Saucer shape: plane|saucer|dish|random|tabula_scalata|"
+                        "shallow_bowl|cone|saddle|wave")
     p.add_argument("--cup",    type=str,   default="cylinder",
                    help="Mirror cup type: cylinder|ellipse|ngon4|ngon6|ngon8|ngonN "
                         "(Section 3.5 extension)")
