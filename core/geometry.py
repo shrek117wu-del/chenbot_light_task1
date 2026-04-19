@@ -282,6 +282,11 @@ def precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=0.5, b=0.3):
 # Regular n-gonal prism mirror reflection  (Section 3.5, Figures 17 & 19)
 # ---------------------------------------------------------------------------
 
+# Sentinel position placed far off-screen so that vertices with no valid
+# n-gon reflection do not contribute anything to the reflected render.
+_OFFSCREEN_POSITION = np.array([1e4, 1e4])
+
+
 def _reflect_across_segment(P, Q, pt1, pt2):
     """
     Attempt to reflect Q as seen from P off the flat mirror segment (pt1, pt2).
@@ -327,7 +332,7 @@ def _reflect_across_segment(P, Q, pt1, pt2):
     s = (A[0, 0] * b[1] - A[1, 0] * b[0]) / det
 
     if t <= 1e-6 or t >= 1.0 - 1e-6:
-        return None                              # intersection behind P or beyond Q'
+        return None   # T is behind P (t<0) or beyond the virtual image Q' (t>1)
     if s < 0.0 or s > edge_len:
         return None                              # intersection outside face segment
 
@@ -365,7 +370,7 @@ def compute_reflection_2d_ngon(P, Q, n=6, r=0.4, angle_offset=None):
 
     # No valid face: place virtual image far off-screen so it contributes
     # nothing to the reflected render.
-    return np.array([1e4, 1e4])
+    return _OFFSCREEN_POSITION.copy()
 
 
 def precompute_reflection_ngon_grid(grid_x, grid_y, P_2d, n=6, r=0.4,

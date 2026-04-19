@@ -190,19 +190,30 @@ class MirrorArtSolver:
         # the sharpness-mismatch error that arises when comparing sharp inputs
         # to inherently-blurry SoftRas renders.
         print("[Solver] Pre-rendering blurred target images…")
-        h0    = self.z_orig.flatten()
+        h0     = self.z_orig.flatten()
         pts_d0 = self._make_pts(h0)
         pts_r0 = self._make_pts(h0, rx=True)
 
+        # Shared UV caches so each camera direction projects only once per
+        # (pts, P_matrix) pair, even when called with different images/sigmas.
+        uv_cache_d = {}   # keyed by id(Pd) — direct view
+        uv_cache_r = {}   # keyed by id(Pr) — reflected view
+
         # Large σ = 1e-5  (Stage 1a)
-        self.blurred_Ied_L = self._prerender_blurred(self.Ied, pts_d0, self.Pd,  sigma=1e-5)
-        self.blurred_Ier_L = self._prerender_blurred(self.Ier, pts_r0, self.Pr,  sigma=1e-5)
+        self.blurred_Ied_L = self._prerender_blurred(
+            self.Ied, pts_d0, self.Pd, sigma=1e-5, _uv_cache=uv_cache_d)
+        self.blurred_Ier_L = self._prerender_blurred(
+            self.Ier, pts_r0, self.Pr, sigma=1e-5, _uv_cache=uv_cache_r)
         # Small σ = 1e-7  (Stage 1b + Stage 2)
-        self.blurred_Ied_S = self._prerender_blurred(self.Ied, pts_d0, self.Pd,  sigma=1e-7)
-        self.blurred_Ier_S = self._prerender_blurred(self.Ier, pts_r0, self.Pr,  sigma=1e-7)
+        self.blurred_Ied_S = self._prerender_blurred(
+            self.Ied, pts_d0, self.Pd, sigma=1e-7, _uv_cache=uv_cache_d)
+        self.blurred_Ier_S = self._prerender_blurred(
+            self.Ier, pts_r0, self.Pr, sigma=1e-7, _uv_cache=uv_cache_r)
         # For Stage 3 texturing: blurred original images
-        self.blurred_Id    = self._prerender_blurred(self.Id,  pts_d0, self.Pd,  sigma=1e-7)
-        self.blurred_Ir    = self._prerender_blurred(self.Ir,  pts_r0, self.Pr,  sigma=1e-7)
+        self.blurred_Id    = self._prerender_blurred(
+            self.Id,  pts_d0, self.Pd, sigma=1e-7, _uv_cache=uv_cache_d)
+        self.blurred_Ir    = self._prerender_blurred(
+            self.Ir,  pts_r0, self.Pr, sigma=1e-7, _uv_cache=uv_cache_r)
         print("[Solver] Pre-rendering done.")
 
         # ---- Results cache --------------------------------------------------
@@ -227,33 +238,48 @@ class MirrorArtSolver:
     # Blurred target pre-rendering  (Section 3.5)
     # ------------------------------------------------------------------
 
-    def _back_project_img_to_verts(self, img_bchw, pts_world, P_matrix):
+    def _back_project_img_to_verts(self, img_bchw, pts_world, P_matrix,
+                                    _uv_cache=None):
         """
         Back-project an image onto mesh vertices by projecting each vertex
         into image space and sampling the pixel colour.
 
-        img_bchw : [1, 3, H_img, W_img]
-        pts_world: [N, 3]
-        P_matrix : [4, 4]
-        Returns  : [N, 3] vertex colours in [0, 1]
+        img_bchw  : [1, 3, H_img, W_img]
+        pts_world : [N, 3]
+        P_matrix  : [4, 4]
+        _uv_cache : optional dict; caches (px, py) keyed by id(P_matrix) so
+                    multiple calls with the same camera and base shape avoid
+                    redundant projection computations.
+        Returns   : [N, 3] vertex colours in [0, 1]
         """
         H_img, W_img = self.img_render_size
-        with torch.no_grad():
-            uv, _ = self.renderer._project(pts_world, P_matrix)   # [N, 2]
-            # NDC [-1,1] → pixel indices [0, W-1] / [0, H-1]
-            px = ((uv[:, 0] + 1.0) * 0.5 * (W_img - 1)).long().clamp(0, W_img - 1)
-            py = ((1.0 - (uv[:, 1] + 1.0) * 0.5) * (H_img - 1)).long().clamp(0, H_img - 1)
-            img_hw3 = img_bchw.squeeze(0).permute(1, 2, 0)        # [H_img, W_img, 3]
-            return img_hw3[py, px]                                  # [N, 3]
+        cache_key    = id(P_matrix)
 
-    def _prerender_blurred(self, img_bchw, pts_world, P_matrix, sigma):
+        if _uv_cache is not None and cache_key in _uv_cache:
+            px, py = _uv_cache[cache_key]
+        else:
+            with torch.no_grad():
+                uv, _ = self.renderer._project(pts_world, P_matrix)   # [N, 2]
+                # NDC [-1,1] → pixel indices [0, W-1] / [0, H-1]
+                px = ((uv[:, 0] + 1.0) * 0.5 * (W_img - 1)).long().clamp(0, W_img - 1)
+                py = ((1.0 - (uv[:, 1] + 1.0) * 0.5) * (H_img - 1)).long().clamp(0, H_img - 1)
+            if _uv_cache is not None:
+                _uv_cache[cache_key] = (px, py)
+
+        with torch.no_grad():
+            img_hw3 = img_bchw.squeeze(0).permute(1, 2, 0)            # [H_img, W_img, 3]
+            return img_hw3[py, px]                                      # [N, 3]
+
+    def _prerender_blurred(self, img_bchw, pts_world, P_matrix, sigma,
+                           _uv_cache=None):
         """
         Generate a SoftRas-blurred version of img_bchw (Section 3.5):
-          1. Back-project img pixels onto base-shape vertices
+          1. Back-project img pixels onto base-shape vertices (cached)
           2. Render the textured base shape through SoftRas at the given σ
         Returns [1, 3, H_img, W_img] blurred image tensor.
         """
-        colors = self._back_project_img_to_verts(img_bchw, pts_world, P_matrix)
+        colors = self._back_project_img_to_verts(img_bchw, pts_world, P_matrix,
+                                                  _uv_cache=_uv_cache)
         with torch.no_grad():
             rendered, _ = self.renderer.render(
                 pts_world, self.faces, colors.clamp(0.0, 1.0),
@@ -278,14 +304,17 @@ class MirrorArtSolver:
             h0     = self.z_orig.flatten()
             pts_d0 = self._make_pts(h0)
             pts_r0 = self._make_pts(h0, rx=True)
+            uv_cache = {}   # reuse projections within this function
 
             # Step 1: texture base shape with Ied → render reflected view → Icr
-            c_from_Ied = self._back_project_img_to_verts(self.Ied, pts_d0, self.Pd)
+            c_from_Ied = self._back_project_img_to_verts(self.Ied, pts_d0, self.Pd,
+                                                          _uv_cache=uv_cache)
             Icr, _     = self.renderer.render(pts_r0, self.faces,
                                               c_from_Ied.clamp(0., 1.), self.Pr)
 
             # Step 2: texture reflected base shape with Ier → render direct view → Icd
-            c_from_Ier = self._back_project_img_to_verts(self.Ier, pts_r0, self.Pr)
+            c_from_Ier = self._back_project_img_to_verts(self.Ier, pts_r0, self.Pr,
+                                                          _uv_cache=uv_cache)
             Icd, _     = self.renderer.render(pts_d0, self.faces,
                                               c_from_Ier.clamp(0., 1.), self.Pd)
 

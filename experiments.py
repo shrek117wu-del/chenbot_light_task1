@@ -110,8 +110,11 @@ def create_reflection_grid(cup_type, grid_x, grid_y, P_2d,
         return precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=a, b=b)
 
     if cup_type.startswith('ngon'):
+        suffix = cup_type[4:]
+        if not suffix:
+            raise ValueError("cup_type 'ngon' requires a side count, e.g. 'ngon6'.")
         try:
-            n = int(cup_type[4:])
+            n = int(suffix)
         except ValueError:
             raise ValueError(f"Invalid cup_type '{cup_type}'. "
                              "Use 'ngon4', 'ngon6', etc.")
