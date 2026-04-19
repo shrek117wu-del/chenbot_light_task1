@@ -2,6 +2,14 @@
 Experiments: base shape generation and test-image creation.
 Supports the shapes used in the paper (plane, saucer, tabula_scalata, random)
 and real image pairs from the data/ directory.
+
+Cup types (mirror cup shapes):
+  cylinder : circular cylinder (paper default, radius r)
+  ellipse  : elliptical cylinder (semi-axes a, b)
+  ngon4    : square prism  (n=4)
+  ngon6    : hexagonal prism (n=6)  — paper Figure 19
+  ngon8    : octagonal prism (n=8)
+  ngonN    : regular N-gonal prism (any integer N)
 """
 import os
 import numpy as np
@@ -54,11 +62,68 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
         Z = 0.4 * R ** 2
 
+    elif shape_type == "cone":
+        # Conical saucer – linear radial profile
+        R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
+        Z = 0.3 * R
+
+    elif shape_type == "saddle":
+        # Hyperbolic saddle surface
+        Z = 0.15 * (X ** 2 - (Y + 1.0) ** 2)
+        Z = Z - Z.min()   # shift to non-negative
+
     else:
         raise ValueError(f"Unknown shape_type: '{shape_type}'. "
-                         "Choose from: plane, random, tabula_scalata, saucer, shallow_bowl")
+                         "Choose from: plane, random, tabula_scalata, saucer, "
+                         "shallow_bowl, cone, saddle")
 
     return X, Y, Z
+
+
+def create_reflection_grid(cup_type, grid_x, grid_y, P_2d,
+                           r=0.4, a=0.5, b=0.3):
+    """
+    Factory that computes the reflected XY positions for every vertex in the
+    heightfield grid, for the requested mirror cup type.
+
+    cup_type options
+    ----------------
+    'cylinder'  : circular cylinder (paper default), uses radius r
+    'ellipse'   : elliptical cylinder, uses semi-axes a, b
+    'ngon4'     : regular square prism    (n=4), uses circumradius r
+    'ngon6'     : regular hexagonal prism (n=6), uses circumradius r  — paper Fig. 19
+    'ngon8'     : regular octagonal prism (n=8), uses circumradius r
+    'ngon<N>'   : regular N-gonal prism (any integer N ≥ 3)
+
+    Returns
+    -------
+    grid_rx, grid_ry : (H, W) numpy arrays — virtual image XY positions
+    """
+    from core.geometry import (precompute_reflection_grid,
+                           precompute_reflection_ellipse_grid,
+                           precompute_reflection_ngon_grid)
+
+    if cup_type == 'cylinder':
+        return precompute_reflection_grid(grid_x, grid_y, P_2d, r=r)
+
+    if cup_type == 'ellipse':
+        return precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=a, b=b)
+
+    if cup_type.startswith('ngon'):
+        suffix = cup_type[4:]
+        if not suffix:
+            raise ValueError("cup_type 'ngon' requires a side count, e.g. 'ngon6'.")
+        try:
+            n = int(suffix)
+        except ValueError:
+            raise ValueError(f"Invalid cup_type '{cup_type}'. "
+                             "Use 'ngon4', 'ngon6', etc.")
+        if n < 3:
+            raise ValueError("n-gonal prism requires n ≥ 3.")
+        return precompute_reflection_ngon_grid(grid_x, grid_y, P_2d, n=n, r=r)
+
+    raise ValueError(f"Unknown cup_type: '{cup_type}'. "
+                     "Choose from: cylinder, ellipse, ngon4, ngon6, ngon8, ngon<N>")
 
 
 def generate_test_images(size=(512, 512), output_dir="data"):

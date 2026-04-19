@@ -22,7 +22,7 @@ import cv2
 
 from core.geometry  import precompute_reflection_grid
 from core.solver    import MirrorArtSolver
-from experiments    import create_base_shape, get_paper_experiment
+from experiments    import create_base_shape, create_reflection_grid, get_paper_experiment
 from export_utils   import export_obj_and_texture
 from viewer         import visualize_result
 
@@ -33,6 +33,7 @@ from viewer         import visualize_result
 
 def run_pipeline(Id_path, Ir_path,
                  shape_type="saucer",
+                 cup_type="cylinder",
                  resolution=(150, 150),
                  img_render_size=(512, 512),
                  iters1_large=300,
@@ -51,6 +52,7 @@ def run_pipeline(Id_path, Ir_path,
     print(f"  Direct  : {Id_path}")
     print(f"  Reflect : {Ir_path}")
     print(f"  Shape   : {shape_type}  @ {resolution}")
+    print(f"  Cup     : {cup_type}")
     print(f"  Render  : {img_render_size}  device={device}")
     print("=" * 60)
 
@@ -61,9 +63,9 @@ def run_pipeline(Id_path, Ir_path,
     grid_x, grid_y, base_h = create_base_shape(shape_type, resolutions=resolution)
 
     print("[2] Precomputing reflection grid (may take a while)…")
-    P_2d      = np.array([0.0, -5.5])   # camera top-view position
-    r_cyl     = 0.4                      # cylinder radius
-    grid_rx, grid_ry = precompute_reflection_grid(grid_x, grid_y, P_2d, r=r_cyl)
+    P_2d = np.array([0.0, -5.5])   # camera top-view position
+    grid_rx, grid_ry = create_reflection_grid(
+        cup_type, grid_x, grid_y, P_2d, r=0.4)
     print(f"    done  ({time.time()-t0:.1f}s)")
 
     # 2. Solver setup -------------------------------------------------------
@@ -130,7 +132,11 @@ def parse_args():
     p.add_argument("--exp",    type=int,   default=1,
                    help="Experiment id: 0=synthetic, 1=paper-1, 2=paper-2")
     p.add_argument("--shape",  type=str,   default="saucer",
-                   help="Shape: plane|saucer|random|tabula_scalata|shallow_bowl")
+                   help="Saucer shape: plane|saucer|random|tabula_scalata|"
+                        "shallow_bowl|cone|saddle")
+    p.add_argument("--cup",    type=str,   default="cylinder",
+                   help="Mirror cup type: cylinder|ellipse|ngon4|ngon6|ngon8|ngonN "
+                        "(Section 3.5 extension)")
     p.add_argument("--res",    type=int,   default=100,
                    help="Heightfield resolution (NxN, paper uses 150)")
     p.add_argument("--render_size", type=int, default=256,
@@ -154,6 +160,7 @@ if __name__ == "__main__":
     X, Y, H, C = run_pipeline(
         Id_path, Ir_path,
         shape_type      = args.shape,
+        cup_type        = args.cup,
         resolution      = (args.res, args.res),
         img_render_size = (args.render_size, args.render_size),
         iters1_large    = args.iters1,

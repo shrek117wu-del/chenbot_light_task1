@@ -184,6 +184,38 @@ class MirrorArtSolver:
         self.rho = self._compute_rho()
         print(f"[Solver] Compatibility ρ = {self.rho:.4f}")
 
+        # ---- Pre-render blurred target images (Section 3.5) ----------------
+        # The paper generates SoftRas-blurred versions of Id/Ir and Ied/Ier
+        # at each σ level and uses THOSE as optimisation targets, eliminating
+        # the sharpness-mismatch error that arises when comparing sharp inputs
+        # to inherently-blurry SoftRas renders.
+        print("[Solver] Pre-rendering blurred target images…")
+        h0     = self.z_orig.flatten()
+        pts_d0 = self._make_pts(h0)
+        pts_r0 = self._make_pts(h0, rx=True)
+
+        # Shared UV caches so each camera direction projects only once per
+        # (pts, P_matrix) pair, even when called with different images/sigmas.
+        uv_cache_d = {}   # keyed by id(Pd) — direct view
+        uv_cache_r = {}   # keyed by id(Pr) — reflected view
+
+        # Large σ = 1e-5  (Stage 1a)
+        self.blurred_Ied_L = self._prerender_blurred(
+            self.Ied, pts_d0, self.Pd, sigma=1e-5, _uv_cache=uv_cache_d)
+        self.blurred_Ier_L = self._prerender_blurred(
+            self.Ier, pts_r0, self.Pr, sigma=1e-5, _uv_cache=uv_cache_r)
+        # Small σ = 1e-7  (Stage 1b + Stage 2)
+        self.blurred_Ied_S = self._prerender_blurred(
+            self.Ied, pts_d0, self.Pd, sigma=1e-7, _uv_cache=uv_cache_d)
+        self.blurred_Ier_S = self._prerender_blurred(
+            self.Ier, pts_r0, self.Pr, sigma=1e-7, _uv_cache=uv_cache_r)
+        # For Stage 3 texturing: blurred original images
+        self.blurred_Id    = self._prerender_blurred(
+            self.Id,  pts_d0, self.Pd, sigma=1e-7, _uv_cache=uv_cache_d)
+        self.blurred_Ir    = self._prerender_blurred(
+            self.Ir,  pts_r0, self.Pr, sigma=1e-7, _uv_cache=uv_cache_r)
+        print("[Solver] Pre-rendering done.")
+
         # ---- Results cache --------------------------------------------------
         self.h_stage1 = None
         self.c_stage1 = None
@@ -203,26 +235,95 @@ class MirrorArtSolver:
                                  self.grid_y.flatten(), h.flatten()], dim=1)
 
     # ------------------------------------------------------------------
+    # Blurred target pre-rendering  (Section 3.5)
+    # ------------------------------------------------------------------
+
+    def _back_project_img_to_verts(self, img_bchw, pts_world, P_matrix,
+                                    _uv_cache=None):
+        """
+        Back-project an image onto mesh vertices by projecting each vertex
+        into image space and sampling the pixel colour.
+
+        img_bchw  : [1, 3, H_img, W_img]
+        pts_world : [N, 3]
+        P_matrix  : [4, 4]
+        _uv_cache : optional dict; caches (px, py) keyed by id(P_matrix) so
+                    multiple calls with the same camera and base shape avoid
+                    redundant projection computations.
+        Returns   : [N, 3] vertex colours in [0, 1]
+        """
+        H_img, W_img = self.img_render_size
+        cache_key    = id(P_matrix)
+
+        if _uv_cache is not None and cache_key in _uv_cache:
+            px, py = _uv_cache[cache_key]
+        else:
+            with torch.no_grad():
+                uv, _ = self.renderer._project(pts_world, P_matrix)   # [N, 2]
+                # NDC [-1,1] → pixel indices [0, W-1] / [0, H-1]
+                px = ((uv[:, 0] + 1.0) * 0.5 * (W_img - 1)).long().clamp(0, W_img - 1)
+                py = ((1.0 - (uv[:, 1] + 1.0) * 0.5) * (H_img - 1)).long().clamp(0, H_img - 1)
+            if _uv_cache is not None:
+                _uv_cache[cache_key] = (px, py)
+
+        with torch.no_grad():
+            img_hw3 = img_bchw.squeeze(0).permute(1, 2, 0)            # [H_img, W_img, 3]
+            return img_hw3[py, px]                                      # [N, 3]
+
+    def _prerender_blurred(self, img_bchw, pts_world, P_matrix, sigma,
+                           _uv_cache=None):
+        """
+        Generate a SoftRas-blurred version of img_bchw (Section 3.5):
+          1. Back-project img pixels onto base-shape vertices (cached)
+          2. Render the textured base shape through SoftRas at the given σ
+        Returns [1, 3, H_img, W_img] blurred image tensor.
+        """
+        colors = self._back_project_img_to_verts(img_bchw, pts_world, P_matrix,
+                                                  _uv_cache=_uv_cache)
+        with torch.no_grad():
+            rendered, _ = self.renderer.render(
+                pts_world, self.faces, colors.clamp(0.0, 1.0),
+                P_matrix, sigma=sigma)
+        return rendered.permute(2, 0, 1).unsqueeze(0)   # [1, 3, H, W]
+
+    # ------------------------------------------------------------------
     # Adaptive weight ρ  (Section 3.5)
     # ------------------------------------------------------------------
 
     def _compute_rho(self):
         """
-        Simplified ρ: render the base shape with uniform gray colors against the
-        black-white enhanced targets. The resulting loss measures how much the
-        images conflict with the undeformed shape.
+        Paper Section 3.5 compatibility score:
+          1. Back-project Ied onto base shape → render reflected view → Icr
+          2. Back-project Ier onto reflected base shape → render direct view → Icd
+          3. ρ = ||Ied - Icd||²_F + ||Ier - Icr||²_F  (mean squared, consistent with renderer)
+
+        This correctly measures how conflicting the two target images are
+        given the undeformed base shape.
         """
         with torch.no_grad():
-            h = self.z_orig
-            c = torch.full((self.N, 3), 0.5, device=self.device)
+            h0     = self.z_orig.flatten()
+            pts_d0 = self._make_pts(h0)
+            pts_r0 = self._make_pts(h0, rx=True)
+            uv_cache = {}   # reuse projections within this function
 
-            loss_d = self.renderer(self._make_pts(h), self.faces, c,
-                                   self.Ied, self.Pd, sigma=1e-5)
-            loss_r = self.renderer(self._make_pts(h, rx=True), self.faces, c,
-                                   self.Ier, self.Pr, sigma=1e-5)
-            rho = (loss_d + loss_r).item()
+            # Step 1: texture base shape with Ied → render reflected view → Icr
+            c_from_Ied = self._back_project_img_to_verts(self.Ied, pts_d0, self.Pd,
+                                                          _uv_cache=uv_cache)
+            Icr, _     = self.renderer.render(pts_r0, self.faces,
+                                              c_from_Ied.clamp(0., 1.), self.Pr)
 
-        # Fallback: if projection puts nothing on screen yet, use a sensible default
+            # Step 2: texture reflected base shape with Ier → render direct view → Icd
+            c_from_Ier = self._back_project_img_to_verts(self.Ier, pts_r0, self.Pr,
+                                                          _uv_cache=uv_cache)
+            Icd, _     = self.renderer.render(pts_d0, self.faces,
+                                              c_from_Ier.clamp(0., 1.), self.Pd)
+
+            # ρ = mean squared differences (same scale as the renderer's forward loss)
+            Ied_hw3 = self.Ied.squeeze(0).permute(1, 2, 0)
+            Ier_hw3 = self.Ier.squeeze(0).permute(1, 2, 0)
+            rho = ((Ied_hw3 - Icd) ** 2).mean().item() + \
+                  ((Ier_hw3 - Icr) ** 2).mean().item()
+
         if rho < 1e-6:
             rho = 1.0
         return rho
@@ -242,19 +343,22 @@ class MirrorArtSolver:
         """
         Minimise Eq. 8:  E_new_visual + w*E_deform + E_barrier
         using Adamax with two-step σ as in Section 3.5.
+
+        Uses pre-rendered blurred target images (Section 3.5) instead of the
+        sharp input images, eliminating the sharpness-mismatch error.
         """
         h = self.z_orig.clone().requires_grad_(True)
         c = torch.full((self.N, 3), 0.5, device=self.device, requires_grad=True)
 
         opt = optim.Adamax([h, c], lr=0.01)
 
-        def one_iter(sigma, w_deform):
+        def one_iter(sigma, w_deform, target_d, target_r):
             opt.zero_grad()
             pts_d = self._make_pts(h)
             pts_r = self._make_pts(h, rx=True)
 
-            loss_vis    = self.renderer(pts_d, self.faces, c, self.Ied, self.Pd, sigma=sigma) \
-                        + self.renderer(pts_r, self.faces, c, self.Ier, self.Pr, sigma=sigma)
+            loss_vis    = self.renderer(pts_d, self.faces, c, target_d, self.Pd, sigma=sigma) \
+                        + self.renderer(pts_r, self.faces, c, target_r, self.Pr, sigma=sigma)
 
             L_h         = compute_laplacian(h.view(1,1,self.H,self.W), self.lap_ker)
             loss_deform = ((L_h - self.L_z_orig) ** 2).sum()
@@ -265,19 +369,19 @@ class MirrorArtSolver:
             opt.step()
             return loss.item(), loss_vis.item()
 
-        # Step 1: large σ = 1e-5,  w = 0.08·ρ
+        # Step 1: large σ = 1e-5,  w = 0.08·ρ  — use blurred large-σ targets
         w1 = 0.08 * self.rho
         print(f"[Stage 1a] σ=1e-5  w={w1:.4f}  iters={iters_large_sigma}")
         for i in range(iters_large_sigma):
-            total, vis = one_iter(1e-5, w1)
+            total, vis = one_iter(1e-5, w1, self.blurred_Ied_L, self.blurred_Ier_L)
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
 
-        # Step 2: small σ = 1e-7,  w = 0.2·ρ
+        # Step 2: small σ = 1e-7,  w = 0.2·ρ  — use blurred small-σ targets
         w2 = 0.2 * self.rho
         print(f"[Stage 1b] σ=1e-7  w={w2:.4f}  iters={iters_small_sigma}")
         for i in range(iters_small_sigma):
-            total, vis = one_iter(1e-7, w2)
+            total, vis = one_iter(1e-7, w2, self.blurred_Ied_S, self.blurred_Ier_S)
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
 
@@ -294,6 +398,8 @@ class MirrorArtSolver:
         Minimise Ẽ = E_new_visual + λ·E_sparse + E_barrier
         using Adamax for c and the proximal gradient method for h.
         λ = 6e-5·ρ  (Section 3.5, small σ = 1e-7)
+
+        Uses pre-rendered blurred targets (small σ) for the visual term.
         """
         assert self.h_stage1 is not None, "Run solve_stage1 first."
 
@@ -313,8 +419,10 @@ class MirrorArtSolver:
             pts_d = self._make_pts(h)
             pts_r = self._make_pts(h, rx=True)
 
-            phi  = self.renderer(pts_d, self.faces, c, self.Ied, self.Pd, sigma=sigma) \
-                 + self.renderer(pts_r, self.faces, c, self.Ier, self.Pr, sigma=sigma) \
+            phi  = self.renderer(pts_d, self.faces, c,
+                                 self.blurred_Ied_S, self.Pd, sigma=sigma) \
+                 + self.renderer(pts_r, self.faces, c,
+                                 self.blurred_Ier_S, self.Pr, sigma=sigma) \
                  + self._barrier(h, c)
             phi.backward()
 
@@ -342,6 +450,9 @@ class MirrorArtSolver:
         """
         Fix the geometry h_final; optimise per-face colours c to match the
         original images Id and Ir.
+
+        Uses pre-rendered blurred Id/Ir as targets (Section 3.5) so that
+        the optimiser matches the reachable colour range of SoftRas.
         """
         assert self.h_final is not None, "Run solve_stage2 first."
 
@@ -357,8 +468,10 @@ class MirrorArtSolver:
             pts_d = self._make_pts(h)
             pts_r = self._make_pts(h, rx=True)
 
-            loss  = self.renderer(pts_d, self.faces, c, self.Id, self.Pd, sigma=sigma) \
-                  + self.renderer(pts_r, self.faces, c, self.Ir, self.Pr, sigma=sigma)
+            loss  = self.renderer(pts_d, self.faces, c,
+                                  self.blurred_Id, self.Pd, sigma=sigma) \
+                  + self.renderer(pts_r, self.faces, c,
+                                  self.blurred_Ir, self.Pr, sigma=sigma)
             # Colour-range barrier only
             loss  = loss + (torch.log(c.clamp(min=1e-6)) * -1 +
                             torch.log((1.0 - c).clamp(min=1e-6)) * -1).mean() * 1e-3

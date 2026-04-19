@@ -1,5 +1,10 @@
 """
 Geometry utilities: reflection computation and heightfield triangle mesh generation.
+
+Supported mirror cup types:
+  - circular cylinder   (original paper)
+  - elliptical cylinder (Section 3.5 extension)
+  - regular n-gonal prism (Section 3.5 extension, Figures 17 & 19)
 """
 import numpy as np
 import torch
@@ -199,6 +204,218 @@ def precompute_reflection_grid(grid_x, grid_y, P_2d, r=0.4):
         R_all[n] = T_best + np.dot(vTQ, tan_dir) * tan_dir - np.dot(vTQ, nT) * nT
 
     return R_all[:, 0].reshape(H, W), R_all[:, 1].reshape(H, W)
+
+
+# ---------------------------------------------------------------------------
+# Elliptical cylinder mirror reflection  (Section 3.5 extension)
+# ---------------------------------------------------------------------------
+
+def compute_reflection_2d_ellipse(P, Q, a=0.5, b=0.3):
+    """
+    Reflection of Q seen from P via an elliptical cylinder mirror with semi-axes
+    a (x-direction) and b (y-direction).  Uses the same angle-bisector / binary-search
+    approach as the circular case; the only change is the ellipse parameterisation
+    T=(a cosθ, b sinθ) and its outward unit normal ∝ (cosθ/a, sinθ/b).
+    """
+    def objective(theta):
+        T   = np.array([a * np.cos(theta), b * np.sin(theta)])
+        n   = np.array([np.cos(theta) / a, np.sin(theta) / b])
+        n  /= (np.linalg.norm(n) + 1e-10)
+        vP  = P - T;  vQ = Q - T
+        dP  = vP / (np.linalg.norm(vP) + 1e-10)
+        dQ  = vQ / (np.linalg.norm(vQ) + 1e-10)
+        bis = dP + dQ
+        return bis[0] * n[1] - bis[1] * n[0]
+
+    thetas = np.linspace(-np.pi, np.pi, 720, endpoint=False)
+    vals   = [objective(th) for th in thetas]
+
+    roots = []
+    for i in range(len(thetas) - 1):
+        if vals[i] * vals[i + 1] <= 0.0:
+            try:
+                res = root_scalar(objective, bracket=[thetas[i], thetas[i + 1]],
+                                  method='brentq', xtol=1e-9)
+                if res.converged:
+                    roots.append(res.root)
+            except Exception:
+                pass
+
+    if not roots:
+        return Q.copy()
+
+    best = None
+    for rt in roots:
+        T  = np.array([a * np.cos(rt), b * np.sin(rt)])
+        n  = np.array([np.cos(rt) / a, np.sin(rt) / b])
+        n /= np.linalg.norm(n)
+        if np.dot(P - T, n) > 0 and np.dot(Q - T, n) > 0:
+            best = rt
+            break
+    if best is None:
+        best = roots[0]
+
+    T   = np.array([a * np.cos(best), b * np.sin(best)])
+    n   = np.array([np.cos(best) / a, np.sin(best) / b])
+    n  /= np.linalg.norm(n)
+    # Tangent at T on the ellipse: d/dθ (a cosθ, b sinθ) = (-a sinθ, b cosθ)
+    tan = np.array([-a * np.sin(best), b * np.cos(best)])
+    tan /= (np.linalg.norm(tan) + 1e-10)
+    vTQ = Q - T
+    return T + np.dot(vTQ, tan) * tan - np.dot(vTQ, n) * n
+
+
+def precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=0.5, b=0.3):
+    """
+    Batch version of compute_reflection_2d_ellipse for a (H, W) grid.
+    Iterates per vertex (ellipse root-finding is not easily vectorised).
+    """
+    H, W   = grid_x.shape
+    Q_all  = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+    R_all  = np.zeros_like(Q_all)
+    for i, Q in enumerate(Q_all):
+        R_all[i] = compute_reflection_2d_ellipse(P_2d, Q, a, b)
+    return R_all[:, 0].reshape(H, W), R_all[:, 1].reshape(H, W)
+
+
+# ---------------------------------------------------------------------------
+# Regular n-gonal prism mirror reflection  (Section 3.5, Figures 17 & 19)
+# ---------------------------------------------------------------------------
+
+# Sentinel position placed far off-screen so that vertices with no valid
+# n-gon reflection do not contribute anything to the reflected render.
+_OFFSCREEN_POSITION = np.array([1e4, 1e4])
+
+
+def _reflect_across_segment(P, Q, pt1, pt2):
+    """
+    Attempt to reflect Q as seen from P off the flat mirror segment (pt1, pt2).
+
+    For a flat mirror the virtual image of Q is the mirror image Q' of Q across
+    the face plane.  The reflection is valid when the ray P→Q' intersects the
+    segment between pt1 and pt2 (i.e. the reflection point T is on the face).
+
+    Returns Q' (the virtual 2-D image position) or None if invalid.
+    """
+    edge     = pt2 - pt1
+    edge_len = np.linalg.norm(edge)
+    if edge_len < 1e-10:
+        return None
+    tan  = edge / edge_len
+    norm = np.array([-tan[1], tan[0]])           # perpendicular (one of two directions)
+
+    # Make the normal point outward (away from the polygon centroid ≈ origin)
+    face_mid = 0.5 * (pt1 + pt2)
+    if np.dot(norm, face_mid) < 0:
+        norm = -norm
+
+    d = np.dot(norm, pt1)                        # signed distance of face from origin
+
+    # Both P and Q must be on the outer side of this face
+    if np.dot(norm, P) <= d + 1e-10 or np.dot(norm, Q) <= d + 1e-10:
+        return None
+
+    # Mirror image of Q across the face
+    dist_Q  = np.dot(norm, Q) - d
+    Q_prime = Q - 2.0 * dist_Q * norm
+
+    # Find intersection T of ray P→Q' with the face line
+    # Solve: P + t*(Q'-P) = pt1 + s*tan,  s ∈ [0, edge_len]
+    dir_PQ = Q_prime - P
+    A = np.array([[dir_PQ[0], -tan[0]],
+                  [dir_PQ[1], -tan[1]]])
+    b = pt1 - P
+    det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+    if abs(det) < 1e-10:
+        return None
+    t = (b[0] * A[1, 1] - b[1] * A[0, 1]) / det
+    s = (A[0, 0] * b[1] - A[1, 0] * b[0]) / det
+
+    if t <= 1e-6 or t >= 1.0 - 1e-6:
+        return None   # T is behind P (t<0) or beyond the virtual image Q' (t>1)
+    if s < 0.0 or s > edge_len:
+        return None                              # intersection outside face segment
+
+    return Q_prime
+
+
+def compute_reflection_2d_ngon(P, Q, n=6, r=0.4, angle_offset=None):
+    """
+    Compute the reflected position of Q seen from P through a regular n-gonal
+    prism mirror (Section 3.5).
+
+    n            : number of sides  (e.g. 4, 6)
+    r            : circumradius of the n-gon cross-section
+    angle_offset : rotation of the n-gon in radians.  If None, uses π/n for
+                   even n so that a face is centred on the downward (−y) direction,
+                   making the default orientation sensible for the paper's geometry.
+
+    Returns the 2-D virtual image position R.
+    """
+    if angle_offset is None:
+        # Rotate so that a face midpoint is on the −y axis:
+        # face midpoint angle = π/n + 2πk/n for some k → set = 3π/2 (downward)
+        angle_offset = 3.0 * np.pi / 2.0 - np.pi / n
+
+    angles   = [2.0 * np.pi * k / n + angle_offset for k in range(n)]
+    vertices = [r * np.array([np.cos(a), np.sin(a)]) for a in angles]
+
+    # Test all n faces; pick the one that yields a valid reflection
+    for k in range(n):
+        v1 = vertices[k]
+        v2 = vertices[(k + 1) % n]
+        R  = _reflect_across_segment(P, Q, v1, v2)
+        if R is not None:
+            return R
+
+    # No valid face: place virtual image far off-screen so it contributes
+    # nothing to the reflected render.
+    return _OFFSCREEN_POSITION.copy()
+
+
+def precompute_reflection_ngon_grid(grid_x, grid_y, P_2d, n=6, r=0.4,
+                                    angle_offset=None):
+    """
+    Batch reflection computation for a regular n-gonal prism mirror.
+
+    Returns two (H, W) arrays: R_x, R_y — the virtual image XY positions
+    for every vertex in the heightfield grid.
+    """
+    H, W   = grid_x.shape
+    Q_all  = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+    R_all  = np.zeros_like(Q_all)
+    for i, Q in enumerate(Q_all):
+        R_all[i] = compute_reflection_2d_ngon(P_2d, Q, n=n, r=r,
+                                              angle_offset=angle_offset)
+    return R_all[:, 0].reshape(H, W), R_all[:, 1].reshape(H, W)
+
+
+def compute_all_ngon_reflections(P_2d, Q_all, n=6, r=0.4, angle_offset=None):
+    """
+    For each point Q in Q_all [N, 2] compute the reflected position for ALL
+    visible n-gon faces.  Returns a list of length n, each element is a
+    (N, 2) array (NaN where the face is not visible from that Q).
+
+    This is used when the prism produces two separate reflected images
+    (Figure 17 / 19 in the paper).
+    """
+    if angle_offset is None:
+        angle_offset = 3.0 * np.pi / 2.0 - np.pi / n
+
+    angles   = [2.0 * np.pi * k / n + angle_offset for k in range(n)]
+    vertices = [r * np.array([np.cos(a), np.sin(a)]) for a in angles]
+
+    face_reflections = []
+    for k in range(n):
+        v1 = vertices[k]
+        v2 = vertices[(k + 1) % n]
+        R_face = np.full_like(Q_all, np.nan)
+        for i, Q in enumerate(Q_all):
+            R = _reflect_across_segment(P_2d, Q, v1, v2)
+            if R is not None:
+                R_face[i] = R
+        face_reflections.append(R_face)
+    return face_reflections
 
 
 # ---------------------------------------------------------------------------
