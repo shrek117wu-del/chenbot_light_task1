@@ -196,12 +196,11 @@ table.receiveShadow = true;
 scene.add(table);
 
 // ---------------------------------------------------------------------------
-// Mirror Cylinder
+// Mirror Cup (loaded from cup.obj or fallback to built-in cylinder)
 // ---------------------------------------------------------------------------
-// Paper: cylinder at origin, radius 0.4, height 2.0
+// Paper: mirror cup at origin, radius 0.4, height 2.0
 // Three.js Y-up: bottom at y=0, top at y=2, centred at (0,1,0)
 // The CubeCamera captures the scene environment for reflections.
-// Placed low (y=0.3) so it better captures the saucer at z=0.5-1.5, y≈0-0.2.
 
 const cubeRT = new THREE.WebGLCubeRenderTarget(1024, {
     generateMipmaps: true,
@@ -209,12 +208,10 @@ const cubeRT = new THREE.WebGLCubeRenderTarget(1024, {
     colorSpace: THREE.SRGBColorSpace
 });
 const cubeCamera = new THREE.CubeCamera(0.05, 50, cubeRT);
-// Place cube camera near the base of the cylinder to better see the saucer
 cubeCamera.position.set(0, 0.3, 0);
 scene.add(cubeCamera);
 
-// Inner reflective surface (seen from inside → BackSide)
-const cylGeo   = new THREE.CylinderGeometry(0.4, 0.4, 2.0, 128, 1, true);
+// Mirror materials
 const mirrorMatInner = new THREE.MeshStandardMaterial({
     envMap:           cubeRT.texture,
     envMapIntensity:  1.0,
@@ -223,12 +220,6 @@ const mirrorMatInner = new THREE.MeshStandardMaterial({
     color:            0xffffff,
     side:             THREE.BackSide
 });
-const cylInner = new THREE.Mesh(cylGeo, mirrorMatInner);
-cylInner.position.set(0, 1.0, 0);
-scene.add(cylInner);
-meshes.push(cylInner);
-
-// Outer shell – polished mirror visible from outside
 const mirrorMatOuter = new THREE.MeshStandardMaterial({
     envMap:           cubeRT.texture,
     envMapIntensity:  1.0,
@@ -237,31 +228,93 @@ const mirrorMatOuter = new THREE.MeshStandardMaterial({
     color:            0xffffff,
     side:             THREE.FrontSide
 });
-const cylOuter = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.41, 0.41, 2.0, 128, 1, true),
-    mirrorMatOuter
-);
-cylOuter.position.set(0, 1.0, 0);
-cylOuter.castShadow = true;
-scene.add(cylOuter);
-meshes.push(cylOuter);
 
-// Cup rim (top ring)
-const rimGeo = new THREE.RingGeometry(0.38, 0.43, 128);
-const rimMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.1 });
-const rim    = new THREE.Mesh(rimGeo, rimMat);
-rim.rotation.x = -Math.PI / 2;
-rim.position.set(0, 2.0, 0);
-scene.add(rim);
-meshes.push(rim);
+// Mirror cup meshes (populated by loader or fallback)
+let cupMeshes = [];
 
-// Cup bottom disk
-const bottomGeo = new THREE.CircleGeometry(0.4, 64);
-const bottomMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
-const bottom    = new THREE.Mesh(bottomGeo, bottomMat);
-bottom.rotation.x = Math.PI / 2;
-bottom.position.set(0, 0.0, 0);
-scene.add(bottom);
+function createFallbackCylinder() {
+    // Default cylinder geometry (used if cup.obj not found)
+    const cylGeo = new THREE.CylinderGeometry(0.4, 0.4, 2.0, 128, 1, true);
+    const cylInner = new THREE.Mesh(cylGeo.clone(), mirrorMatInner);
+    cylInner.position.set(0, 1.0, 0);
+    scene.add(cylInner);
+    meshes.push(cylInner);
+    cupMeshes.push(cylInner);
+
+    const cylOuter = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.41, 0.41, 2.0, 128, 1, true),
+        mirrorMatOuter
+    );
+    cylOuter.position.set(0, 1.0, 0);
+    cylOuter.castShadow = true;
+    scene.add(cylOuter);
+    meshes.push(cylOuter);
+    cupMeshes.push(cylOuter);
+
+    // Cup rim
+    const rimGeo = new THREE.RingGeometry(0.38, 0.43, 128);
+    const rimMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.1 });
+    const rim = new THREE.Mesh(rimGeo, rimMat);
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(0, 2.0, 0);
+    scene.add(rim);
+    meshes.push(rim);
+    cupMeshes.push(rim);
+
+    // Cup bottom
+    const bottomGeo = new THREE.CircleGeometry(0.4, 64);
+    const bottomMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
+    const bottom = new THREE.Mesh(bottomGeo, bottomMat);
+    bottom.rotation.x = Math.PI / 2;
+    bottom.position.set(0, 0.0, 0);
+    scene.add(bottom);
+    cupMeshes.push(bottom);
+}
+
+// Try to load cup.obj first; fall back to built-in cylinder
+const cupLoader = new OBJLoader();
+cupLoader.load('cup.obj', (cupObj) => {
+    // Apply mirror material to loaded cup model
+    cupObj.traverse(child => {
+        if (child.isMesh) {
+            // Create inner (BackSide) and outer (FrontSide) copies
+            const innerClone = child.clone();
+            innerClone.material = mirrorMatInner;
+            scene.add(innerClone);
+            meshes.push(innerClone);
+            cupMeshes.push(innerClone);
+
+            child.material = mirrorMatOuter;
+            child.castShadow = true;
+            scene.add(child);
+            meshes.push(child);
+            cupMeshes.push(child);
+        }
+    });
+
+    // Add rim and bottom for the loaded cup
+    const rimGeo = new THREE.RingGeometry(0.38, 0.43, 128);
+    const rimMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.1 });
+    const rim = new THREE.Mesh(rimGeo, rimMat);
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(0, 2.0, 0);
+    scene.add(rim);
+    cupMeshes.push(rim);
+
+    const bottomGeo = new THREE.CircleGeometry(0.4, 64);
+    const bottomMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
+    const bottom = new THREE.Mesh(bottomGeo, bottomMat);
+    bottom.rotation.x = Math.PI / 2;
+    bottom.position.set(0, 0.0, 0);
+    scene.add(bottom);
+    cupMeshes.push(bottom);
+
+    showStatus('✓ Cup model loaded from cup.obj');
+}, undefined, () => {
+    // cup.obj not found — use fallback cylinder
+    console.log('cup.obj not found, using built-in cylinder geometry');
+    createFallbackCylinder();
+});
 
 // ---------------------------------------------------------------------------
 // Image Reference Panels  (direct + reflected rendered views)
@@ -419,16 +472,10 @@ scene.add(new THREE.AxesHelper(0.5));
 function animate() {
     requestAnimationFrame(animate);
 
-    // Update cube-map: hide cylinder surfaces so they don't block the capture
-    cylInner.visible = false;
-    cylOuter.visible = false;
-    rim.visible      = false;
-    bottom.visible   = false;
+    // Update cube-map: hide cup surfaces so they don't block the capture
+    cupMeshes.forEach(m => { if (m) m.visible = false; });
     cubeCamera.update(renderer, scene);
-    cylInner.visible = true;
-    cylOuter.visible = true;
-    rim.visible      = true;
-    bottom.visible   = true;
+    cupMeshes.forEach(m => { if (m) m.visible = true; });
 
     controls.update();
     renderer.render(scene, camera);

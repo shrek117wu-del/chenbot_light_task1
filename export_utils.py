@@ -144,9 +144,129 @@ def export_cylinder_obj(radius=0.4, height=2.0, segments=128,
     print(f"  cylinder OBJ saved → {obj_path}  ({segments*2} triangles)")
 
 
+def export_ngon_prism_obj(n, radius=0.4, height=2.0,
+                          obj_path="cup.obj"):
+    """
+    Write an OBJ for a regular n-gonal prism mirror cup (paper Figure 19).
+    Three.js Y-up: prism axis along Y, bottom at y=0, top at y=height.
+    """
+    verts, normals, uvs = [], [], []
+    faces = []
+
+    for i in range(n):
+        theta = 2.0 * math.pi * i / n
+        theta_next = 2.0 * math.pi * (i + 1) / n
+        # Face normal (outward, perpendicular to the face edge)
+        mid_theta = (theta + theta_next) / 2.0
+        nx = math.cos(mid_theta)
+        nz = math.sin(mid_theta)
+        x0 = radius * math.cos(theta)
+        z0 = radius * math.sin(theta)
+        x1 = radius * math.cos(theta_next)
+        z1 = radius * math.sin(theta_next)
+        u0 = i / n
+        u1 = (i + 1) / n
+
+        base = len(verts)
+        # 4 vertices per face: bottom-left, bottom-right, top-left, top-right
+        verts.extend([(x0, 0.0, z0), (x1, 0.0, z1),
+                      (x0, height, z0), (x1, height, z1)])
+        normals.extend([(nx, 0, nz)] * 4)
+        uvs.extend([(u0, 0.0), (u1, 0.0), (u0, 1.0), (u1, 1.0)])
+        a = base + 1  # 1-indexed
+        b = base + 2
+        c = base + 3
+        d = base + 4
+        faces.append((a, b, d, c))
+
+    with open(obj_path, "w") as f:
+        f.write(f"o ngon{n}_prism\n")
+        for v in verts:
+            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+        for vt in uvs:
+            f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+        for vn in normals:
+            f.write(f"vn {vn[0]:.6f} {vn[1]:.6f} {vn[2]:.6f}\n")
+        for a, b, d, c in faces:
+            f.write(f"f {a}/{a}/{a} {b}/{b}/{b} {d}/{d}/{d}\n")
+            f.write(f"f {a}/{a}/{a} {d}/{d}/{d} {c}/{c}/{c}\n")
+
+    print(f"  ngon{n} prism OBJ saved → {obj_path}  ({n*2} triangles)")
+
+
+def export_ellipse_cylinder_obj(a=0.5, b=0.3, height=2.0, segments=128,
+                                obj_path="cup.obj"):
+    """
+    Write an OBJ for an elliptical cylinder mirror cup (paper Section 3.5).
+    Semi-axes a (x), b (z), axis along Y.
+    """
+    verts, uvs, normals = [], [], []
+    faces = []
+
+    for seg in range(segments + 1):
+        theta = 2.0 * math.pi * seg / segments
+        x = a * math.cos(theta)
+        z = b * math.sin(theta)
+        # Outward normal for ellipse: (cos/a, sin/b) normalized
+        nx_raw = math.cos(theta) / a
+        nz_raw = math.sin(theta) / b
+        norm = math.sqrt(nx_raw**2 + nz_raw**2) + 1e-12
+        nx = nx_raw / norm
+        nz = nz_raw / norm
+        verts.append((x, 0.0, z))
+        normals.append((nx, 0.0, nz))
+        uvs.append((seg / segments, 0.0))
+        verts.append((x, height, z))
+        normals.append((nx, 0.0, nz))
+        uvs.append((seg / segments, 1.0))
+
+    for seg in range(segments):
+        a_idx = seg * 2 + 1
+        b_idx = seg * 2 + 2
+        c_idx = (seg + 1) * 2 + 1
+        d_idx = (seg + 1) * 2 + 2
+        faces.append((a_idx, b_idx, d_idx, c_idx))
+
+    with open(obj_path, "w") as f:
+        f.write("o ellipse_cylinder\n")
+        for v in verts:
+            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+        for vt in uvs:
+            f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+        for vn in normals:
+            f.write(f"vn {vn[0]:.6f} {vn[1]:.6f} {vn[2]:.6f}\n")
+        for a_idx, b_idx, d_idx, c_idx in faces:
+            f.write(f"f {a_idx}/{a_idx}/{a_idx} {b_idx}/{b_idx}/{b_idx} {d_idx}/{d_idx}/{d_idx}\n")
+            f.write(f"f {a_idx}/{a_idx}/{a_idx} {d_idx}/{d_idx}/{d_idx} {c_idx}/{c_idx}/{c_idx}\n")
+
+    print(f"  ellipse cylinder OBJ saved → {obj_path}  ({segments*2} triangles)")
+
+
 def export_obj_and_texture(grid_x, grid_y, h_grid, color_grid,
-                           obj_path="saucer.obj", tex_path="texture.png"):
-    """Main entry point: export saucer + cylinder OBJs."""
+                           obj_path="saucer.obj", tex_path="texture.png",
+                           cup_type="cylinder", cup_radius=0.4,
+                           cup_a=0.5, cup_b=0.3):
+    """Main entry point: export saucer + mirror cup OBJs.
+
+    cup_type: 'cylinder', 'ngon4', 'ngon6', 'ngon8', 'ngon<N>', 'ellipse'
+    """
     export_saucer_obj(grid_x, grid_y, h_grid, color_grid, obj_path, tex_path)
-    cyl_path = obj_path.replace("saucer.obj", "cylinder.obj")
-    export_cylinder_obj(obj_path=cyl_path)
+
+    cup_path = obj_path.replace("saucer.obj", "cup.obj")
+
+    if cup_type == "cylinder":
+        export_cylinder_obj(radius=cup_radius, obj_path=cup_path)
+    elif cup_type == "ellipse":
+        export_ellipse_cylinder_obj(a=cup_a, b=cup_b, obj_path=cup_path)
+    elif cup_type.startswith("ngon"):
+        suffix = cup_type[4:]
+        if not suffix or not suffix.isdigit():
+            raise ValueError(
+                f"Invalid cup_type '{cup_type}'. Expected format: 'ngon4', 'ngon6', etc.")
+        n = int(suffix)
+        if n < 3:
+            raise ValueError(f"n-gon prism requires n >= 3, got n={n}")
+        export_ngon_prism_obj(n, radius=cup_radius, obj_path=cup_path)
+    else:
+        # Default to cylinder
+        export_cylinder_obj(radius=cup_radius, obj_path=cup_path)

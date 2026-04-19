@@ -12,7 +12,7 @@ import numpy as np
 import cv2
 
 from .geometry import precompute_reflection_grid, get_grid_triangles
-from .renderer  import SoftTriangleRenderer, get_camera_matrix
+from .renderer  import SoftTriangleRenderer, SoftTriangleRendererLoss, get_camera_matrix
 
 
 # ---------------------------------------------------------------------------
@@ -90,19 +90,26 @@ def barrier_loss(h, c, z_orig, delta):
     """
     Ebarrier: keeps |hi - zi| < delta  and  0 < cj < 1.
     Uses log barriers as in the paper (Eq. 5).
+    Paper uses SUM; scaled by a small coefficient μ for numerical stability.
     """
+    mu = 1e-4    # barrier weight coefficient (keeps barrier < visual/deform terms)
     # Height barrier
     diff      = h - z_orig                           # signed
     h_upper   = log_barrier(delta - diff)            # zi - hi < delta
     h_lower   = log_barrier(delta + diff)            # hi - zi < delta
-    h_term    = (h_upper + h_lower).mean()
+    h_term    = (h_upper + h_lower).sum()
 
     # Colour barrier
     c_lower   = log_barrier(c)
     c_upper   = log_barrier(1.0 - c)
-    c_term    = (c_lower + c_upper).mean()
+    c_term    = (c_lower + c_upper).sum()
 
-    return h_term + c_term
+    return mu * (h_term + c_term)
+
+
+def _check_convergence(prev_loss, curr_loss, tol):
+    """Return True if relative change of loss < tol (paper Section 3.3)."""
+    return abs(prev_loss - curr_loss) / (abs(prev_loss) + 1e-10) < tol
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +182,10 @@ class MirrorArtSolver:
             cam, [0., 0., 0.1], up, fov_deg=3.0).to(device)
 
         # ---- Renderer -------------------------------------------------------
-        self.renderer = SoftTriangleRenderer(
+        # Use SUM-based loss renderer (matching paper's Frobenius norm ||.||²_F)
+        # for optimisation.  The render() method (inherited) is unchanged and
+        # used for pre-rendering and visualisation.
+        self.renderer = SoftTriangleRendererLoss(
             img_size=img_render_size, sigma=1e-5, gamma=1e-4,
             chunk_size=4096
         ).to(device)
@@ -295,7 +305,7 @@ class MirrorArtSolver:
         Paper Section 3.5 compatibility score:
           1. Back-project Ied onto base shape → render reflected view → Icr
           2. Back-project Ier onto reflected base shape → render direct view → Icd
-          3. ρ = ||Ied - Icd||²_F + ||Ier - Icr||²_F  (mean squared, consistent with renderer)
+          3. ρ = ||Ied - Icd||²_F + ||Ier - Icr||²_F  (SUM squared, paper's Frobenius norm)
 
         This correctly measures how conflicting the two target images are
         given the undeformed base shape.
@@ -318,11 +328,11 @@ class MirrorArtSolver:
             Icd, _     = self.renderer.render(pts_d0, self.faces,
                                               c_from_Ier.clamp(0., 1.), self.Pd)
 
-            # ρ = mean squared differences (same scale as the renderer's forward loss)
+            # ρ = SUM squared differences (paper's ||.||²_F Frobenius norm)
             Ied_hw3 = self.Ied.squeeze(0).permute(1, 2, 0)
             Ier_hw3 = self.Ier.squeeze(0).permute(1, 2, 0)
-            rho = ((Ied_hw3 - Icd) ** 2).mean().item() + \
-                  ((Ier_hw3 - Icr) ** 2).mean().item()
+            rho = ((Ied_hw3 - Icd) ** 2).sum().item() + \
+                  ((Ier_hw3 - Icr) ** 2).sum().item()
 
         if rho < 1e-6:
             rho = 1.0
@@ -339,13 +349,17 @@ class MirrorArtSolver:
     # Stage 1 – Black-White Enhancement (two-step σ)
     # ------------------------------------------------------------------
 
-    def solve_stage1(self, iters_large_sigma=300, iters_small_sigma=300):
+    def solve_stage1(self, iters_large_sigma=300, iters_small_sigma=300,
+                     convergence_tol=1e-4):
         """
         Minimise Eq. 8:  E_new_visual + w*E_deform + E_barrier
         using Adamax with two-step σ as in Section 3.5.
 
         Uses pre-rendered blurred target images (Section 3.5) instead of the
         sharp input images, eliminating the sharpness-mismatch error.
+
+        Convergence: terminates early when relative change of E < convergence_tol
+        (paper Section 3.3: threshold 10^-4).
         """
         h = self.z_orig.clone().requires_grad_(True)
         c = torch.full((self.N, 3), 0.5, device=self.device, requires_grad=True)
@@ -366,24 +380,42 @@ class MirrorArtSolver:
             loss_bar    = self._barrier(h, c)
             loss        = loss_vis + w_deform * loss_deform + loss_bar
             loss.backward()
-            opt.step()
+
+            # Backtracking line search: clamp h to satisfy hard constraint |h-z|<δ
+            with torch.no_grad():
+                opt.step()
+                h.clamp_(self.z_orig - self.delta + 1e-6,
+                         self.z_orig + self.delta - 1e-6)
+                c.clamp_(1e-6, 1.0 - 1e-6)
+
             return loss.item(), loss_vis.item()
 
         # Step 1: large σ = 1e-5,  w = 0.08·ρ  — use blurred large-σ targets
         w1 = 0.08 * self.rho
-        print(f"[Stage 1a] σ=1e-5  w={w1:.4f}  iters={iters_large_sigma}")
+        print(f"[Stage 1a] σ=1e-5  w={w1:.4f}  iters≤{iters_large_sigma}")
+        prev_loss = float('inf')
         for i in range(iters_large_sigma):
             total, vis = one_iter(1e-5, w1, self.blurred_Ied_L, self.blurred_Ier_L)
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
+            # Convergence check (paper Section 3.3)
+            if i > 20 and _check_convergence(prev_loss, total, convergence_tol):
+                print(f"  converged at iter {i} (rel_change < {convergence_tol})")
+                break
+            prev_loss = total
 
         # Step 2: small σ = 1e-7,  w = 0.2·ρ  — use blurred small-σ targets
         w2 = 0.2 * self.rho
-        print(f"[Stage 1b] σ=1e-7  w={w2:.4f}  iters={iters_small_sigma}")
+        print(f"[Stage 1b] σ=1e-7  w={w2:.4f}  iters≤{iters_small_sigma}")
+        prev_loss = float('inf')
         for i in range(iters_small_sigma):
             total, vis = one_iter(1e-7, w2, self.blurred_Ied_S, self.blurred_Ier_S)
             if i % 50 == 0:
                 print(f"  iter {i:4d}  total={total:.4f}  vis={vis:.4f}")
+            if i > 20 and _check_convergence(prev_loss, total, convergence_tol):
+                print(f"  converged at iter {i} (rel_change < {convergence_tol})")
+                break
+            prev_loss = total
 
         self.h_stage1 = h.detach()
         self.c_stage1 = c.detach().clamp(0., 1.)
@@ -393,13 +425,14 @@ class MirrorArtSolver:
     # Stage 2 – Sparse Spike Strategy  (Eq. 10 + proximal gradient)
     # ------------------------------------------------------------------
 
-    def solve_stage2(self, iterations=200):
+    def solve_stage2(self, iterations=200, convergence_tol=1e-4):
         """
         Minimise Ẽ = E_new_visual + λ·E_sparse + E_barrier
         using Adamax for c and the proximal gradient method for h.
         λ = 6e-5·ρ  (Section 3.5, small σ = 1e-7)
 
         Uses pre-rendered blurred targets (small σ) for the visual term.
+        Terminates when relative change < convergence_tol (paper: 10^-4).
         """
         assert self.h_stage1 is not None, "Run solve_stage1 first."
 
@@ -413,7 +446,8 @@ class MirrorArtSolver:
 
         opt = optim.Adamax([h, c], lr=0.01)
 
-        print(f"[Stage 2] σ=1e-7  λ={lmbda:.6f}  iters={iterations}")
+        print(f"[Stage 2] σ=1e-7  λ={lmbda:.6f}  iters≤{iterations}")
+        prev_loss = float('inf')
         for i in range(iterations):
             opt.zero_grad()
             pts_d = self._make_pts(h)
@@ -434,9 +468,18 @@ class MirrorArtSolver:
                 h_new   = torch.where(d >  thresh, h - thresh,
                           torch.where(d < -thresh, h + thresh, he))
                 h.copy_(h_new)
+                # Enforce hard constraints
+                h.clamp_(self.z_orig - self.delta + 1e-6,
+                         self.z_orig + self.delta - 1e-6)
+                c.clamp_(1e-6, 1.0 - 1e-6)
 
+            loss_val = phi.item()
             if i % 50 == 0:
-                print(f"  iter {i:4d}  phi={phi.item():.4f}")
+                print(f"  iter {i:4d}  phi={loss_val:.4f}")
+            if i > 20 and _check_convergence(prev_loss, loss_val, convergence_tol):
+                print(f"  converged at iter {i} (rel_change < {convergence_tol})")
+                break
+            prev_loss = loss_val
 
         self.h_final = h.detach()
         self.c_stage2 = c.detach().clamp(0., 1.)
@@ -446,13 +489,14 @@ class MirrorArtSolver:
     # Stage 3 – Texturing  (Section 3.4.2)
     # ------------------------------------------------------------------
 
-    def solve_stage3_texturing(self, iterations=300):
+    def solve_stage3_texturing(self, iterations=300, convergence_tol=1e-4):
         """
         Fix the geometry h_final; optimise per-face colours c to match the
         original images Id and Ir.
 
         Uses pre-rendered blurred Id/Ir as targets (Section 3.5) so that
         the optimiser matches the reachable colour range of SoftRas.
+        Terminates when relative change < convergence_tol.
         """
         assert self.h_final is not None, "Run solve_stage2 first."
 
@@ -462,7 +506,8 @@ class MirrorArtSolver:
         opt = optim.Adamax([c], lr=0.02)
         sigma = 1e-7
 
-        print(f"[Stage 3] Texturing  iters={iterations}")
+        print(f"[Stage 3] Texturing  iters≤{iterations}")
+        prev_loss = float('inf')
         for i in range(iterations):
             opt.zero_grad()
             pts_d = self._make_pts(h)
@@ -472,16 +517,21 @@ class MirrorArtSolver:
                                   self.blurred_Id, self.Pd, sigma=sigma) \
                   + self.renderer(pts_r, self.faces, c,
                                   self.blurred_Ir, self.Pr, sigma=sigma)
-            # Colour-range barrier only
-            loss  = loss + (torch.log(c.clamp(min=1e-6)) * -1 +
-                            torch.log((1.0 - c).clamp(min=1e-6)) * -1).mean() * 1e-3
+            # Colour-range barrier (SUM-based, with small coefficient)
+            loss  = loss + 1e-4 * (torch.log(c.clamp(min=1e-6)) * -1 +
+                            torch.log((1.0 - c).clamp(min=1e-6)) * -1).sum()
             loss.backward()
             opt.step()
             with torch.no_grad():
                 c.clamp_(0., 1.)
 
+            loss_val = loss.item()
             if i % 50 == 0:
-                print(f"  iter {i:4d}  loss={loss.item():.4f}")
+                print(f"  iter {i:4d}  loss={loss_val:.4f}")
+            if i > 20 and _check_convergence(prev_loss, loss_val, convergence_tol):
+                print(f"  converged at iter {i} (rel_change < {convergence_tol})")
+                break
+            prev_loss = loss_val
 
         c_final = c.detach().clamp(0., 1.)
         H, W = self.H, self.W

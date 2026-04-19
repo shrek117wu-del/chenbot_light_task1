@@ -58,6 +58,15 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
         Z = 0.8 * R ** 2   # parabolic bowl, height up to ~0.8*0.5^2=0.2
 
+    elif shape_type == "dish":
+        # Realistic dish/plate shape: flat center with gently raised edges
+        # This matches the paper's typical saucer reference shape (Figure 1)
+        R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
+        R_max = np.sqrt(0.5 ** 2 + 0.5 ** 2)
+        r_norm = R / R_max
+        # Flat center, raised edges (like a real saucer/dish)
+        Z = 0.15 * np.clip(r_norm - 0.5, 0, None) ** 2 / 0.25
+
     elif shape_type == "shallow_bowl":
         R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
         Z = 0.4 * R ** 2
@@ -72,10 +81,15 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         Z = 0.15 * (X ** 2 - (Y + 1.0) ** 2)
         Z = Z - Z.min()   # shift to non-negative
 
+    elif shape_type == "wave":
+        # Wave shape similar to the artist's design (paper Figure 2)
+        # Sinusoidal waves in both X and Y directions
+        Z = 0.04 * (np.sin(8.0 * X) * np.cos(6.0 * (Y + 1.0)) + 1.0)
+
     else:
         raise ValueError(f"Unknown shape_type: '{shape_type}'. "
-                         "Choose from: plane, random, tabula_scalata, saucer, "
-                         "shallow_bowl, cone, saddle")
+                         "Choose from: plane, random, tabula_scalata, saucer, dish, "
+                         "shallow_bowl, cone, saddle, wave")
 
     return X, Y, Z
 
@@ -156,15 +170,96 @@ def generate_test_images(size=(512, 512), output_dir="data"):
     return path_d, path_r
 
 
+def generate_synthetic_pair(label_d, label_r, fg_d=(0,0,200), fg_r=(200,0,0),
+                            size=(512,512), output_dir="data"):
+    """Generate a synthetic image pair with two text labels on white background."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    def make_img(text, fg_bgr, size):
+        img = np.ones((size[1], size[0], 3), dtype=np.uint8) * 255
+        font_scale = max(size[0] / 80, 1.0)
+        thickness  = max(int(font_scale * 2), 1)
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX,
+                                       font_scale, thickness)
+        ox = (size[0] - tw) // 2
+        oy = (size[1] + th) // 2
+        cv2.putText(img, text, (ox, oy), cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, fg_bgr, thickness, cv2.LINE_AA)
+        return img
+
+    img_d = make_img(label_d, fg_d, size)
+    img_r = make_img(label_r, fg_r, size)
+
+    safe_d = label_d.replace(" ", "_")
+    safe_r = label_r.replace(" ", "_")
+    path_d = os.path.join(output_dir, f"synth_{safe_d}-direct.png")
+    path_r = os.path.join(output_dir, f"synth_{safe_r}-reflect.png")
+    cv2.imwrite(path_d, img_d)
+    cv2.imwrite(path_r, img_r)
+    return path_d, path_r
+
+
+def generate_shape_image(shape_name, fg_color=(0, 0, 200), size=(512, 512),
+                         output_dir="data"):
+    """Generate an image with a simple geometric shape (circle, star, heart, etc.)."""
+    os.makedirs(output_dir, exist_ok=True)
+    img = np.ones((size[1], size[0], 3), dtype=np.uint8) * 255
+    cx, cy = size[0] // 2, size[1] // 2
+    r = min(size) // 4
+
+    if shape_name == "circle":
+        cv2.circle(img, (cx, cy), r, fg_color, -1, cv2.LINE_AA)
+    elif shape_name == "star":
+        pts = []
+        for k in range(5):
+            angle = -np.pi / 2 + k * 2 * np.pi / 5
+            pts.append([int(cx + r * np.cos(angle)),
+                        int(cy + r * np.sin(angle))])
+            angle2 = angle + np.pi / 5
+            pts.append([int(cx + r * 0.4 * np.cos(angle2)),
+                        int(cy + r * 0.4 * np.sin(angle2))])
+        pts = np.array(pts, dtype=np.int32)
+        cv2.fillPoly(img, [pts], fg_color, cv2.LINE_AA)
+    elif shape_name == "triangle":
+        pts = np.array([
+            [cx, cy - r],
+            [cx - int(r * 0.87), cy + r // 2],
+            [cx + int(r * 0.87), cy + r // 2],
+        ], dtype=np.int32)
+        cv2.fillPoly(img, [pts], fg_color, cv2.LINE_AA)
+    elif shape_name == "square":
+        cv2.rectangle(img, (cx - r, cy - r), (cx + r, cy + r), fg_color, -1)
+    else:
+        # Default: filled circle
+        cv2.circle(img, (cx, cy), r, fg_color, -1, cv2.LINE_AA)
+
+    path = os.path.join(output_dir, f"shape_{shape_name}.png")
+    cv2.imwrite(path, img)
+    return path
+
+
 def get_paper_experiment(exp_id=1, output_dir="data"):
     """
     Return (direct_path, reflect_path) for one of the paper's built-in image pairs.
     exp_id=1 : data/1-direct.png + data/1-reflect.png
     exp_id=2 : data/2-direct.png + data/2-reflect.png
     exp_id=0 : generated test images (A / B)
+    exp_id=3..7 : additional synthetic pairs for paper experiments
     """
     if exp_id == 0:
         return generate_test_images(output_dir=output_dir)
+
+    # Additional synthetic experiments for demonstrating all paper examples
+    synth_pairs = {
+        3: ("C", "D", (0, 0, 200), (200, 0, 0)),
+        4: ("E", "F", (0, 150, 0), (150, 0, 150)),
+        5: ("X", "Y", (0, 0, 0), (0, 0, 0)),
+        6: ("M", "W", (200, 0, 0), (0, 0, 200)),
+        7: ("H", "K", (0, 100, 200), (200, 100, 0)),
+    }
+    if exp_id in synth_pairs:
+        ld, lr, cd, cr = synth_pairs[exp_id]
+        return generate_synthetic_pair(ld, lr, cd, cr, output_dir=output_dir)
 
     p_d = os.path.join(output_dir, f"{exp_id}-direct.png")
     p_r = os.path.join(output_dir, f"{exp_id}-reflect.png")
@@ -174,3 +269,42 @@ def get_paper_experiment(exp_id=1, output_dir="data"):
             "Place the paper's images in the data/ folder."
         )
     return p_d, p_r
+
+
+# -----------------------------------------------------------------------
+# Paper experiment configurations
+# -----------------------------------------------------------------------
+# Matching the paper's Figures 15-21 experiments.
+
+PAPER_SHAPES = ["plane", "random", "tabula_scalata", "saucer", "shallow_bowl",
+                "dish", "wave"]
+"""The saucer shapes tested in the paper (Figure 15 and beyond)."""
+
+PAPER_CUP_TYPES = ["cylinder", "ngon4", "ngon6", "ngon8", "ellipse"]
+"""Mirror cup types from paper (Section 3.5, Figure 19)."""
+
+# Figure 15: 5 different shapes with one image pair
+FIG15_EXPERIMENTS = [
+    {"shape": s, "exp_id": 1, "cup": "cylinder"}
+    for s in PAPER_SHAPES
+]
+
+# Figure 18: Stress tests — plane, random, tabula_scalata with exp_id=1
+FIG18_EXPERIMENTS = [
+    {"shape": "plane",           "exp_id": 1, "cup": "cylinder"},
+    {"shape": "random",          "exp_id": 1, "cup": "cylinder"},
+    {"shape": "tabula_scalata",  "exp_id": 1, "cup": "cylinder"},
+]
+
+# Figure 19: n-gon prism examples
+FIG19_EXPERIMENTS = [
+    {"shape": "plane", "exp_id": 1, "cup": "ngon4"},
+    {"shape": "plane", "exp_id": 1, "cup": "ngon6"},
+    {"shape": "plane", "exp_id": 1, "cup": "ngon8"},
+    {"shape": "plane", "exp_id": 1, "cup": "ellipse"},
+]
+
+# Combined: all paper example configurations
+ALL_PAPER_EXPERIMENTS = (
+    FIG15_EXPERIMENTS + FIG18_EXPERIMENTS + FIG19_EXPERIMENTS
+)
