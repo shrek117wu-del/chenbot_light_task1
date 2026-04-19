@@ -137,15 +137,15 @@ def parse_args():
     p.add_argument("--cup",    type=str,   default="cylinder",
                    help="Mirror cup type: cylinder|ellipse|ngon4|ngon6|ngon8|ngonN "
                         "(Section 3.5 extension)")
-    p.add_argument("--res",    type=int,   default=100,
+    p.add_argument("--res",    type=int,   default=150,
                    help="Heightfield resolution (NxN, paper uses 150)")
-    p.add_argument("--render_size", type=int, default=256,
+    p.add_argument("--render_size", type=int, default=512,
                    help="Render image size (paper uses 512)")
-    p.add_argument("--iters1", type=int,   default=150,
-                   help="Stage 1 iters per sigma step")
-    p.add_argument("--iters2", type=int,   default=100,
-                   help="Stage 2 iters")
-    p.add_argument("--iters3", type=int,   default=150,
+    p.add_argument("--iters1", type=int,   default=500,
+                   help="Stage 1 iters per sigma step (paper: until convergence)")
+    p.add_argument("--iters2", type=int,   default=300,
+                   help="Stage 2 iters (paper: until convergence)")
+    p.add_argument("--iters3", type=int,   default=300,
                    help="Stage 3 texturing iters")
     p.add_argument("--no_viewer", action="store_true",
                    help="Skip launching the 3D viewer")
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     )
 
     print("\n[Output] Exporting 3D model…")
-    export_obj_and_texture(X, Y, H, C)
+    export_obj_and_texture(X, Y, H, C, cup_type=args.cup)
 
     if not args.no_viewer:
         print("\n[Viewer] Launching 3D viewer…")

@@ -299,3 +299,68 @@ class SoftTriangleRenderer(torch.nn.Module):
             mask_count = mask_count + mc.sum()
 
         return loss_sum / mask_count.clamp(min=1.0)
+
+
+class SoftTriangleRendererLoss(SoftTriangleRenderer):
+    """
+    Wrapper that computes loss = SUM of squared pixel differences (matching
+    the paper's Frobenius norm definition).  Exposed separately so the
+    basic ``render()`` method is unaffected.
+    """
+
+    def forward(self, vertices, faces, colors, target_bchw, P_matrix, sigma=None):
+        """Same interface as SoftTriangleRenderer.forward but returns SUM loss."""
+        if sigma is None:
+            sigma = self.sigma
+
+        device = vertices.device
+        H, W   = self.img_size
+
+        uv, z = self._project(vertices, P_matrix)
+        face_uv = uv[faces]
+        face_c  = colors[faces].mean(dim=1)
+        face_z  = z[faces].mean(dim=1)
+
+        tri_min = face_uv.min(dim=1)[0]
+        tri_max = face_uv.max(dim=1)[0]
+        vis = (tri_max[:, 0] > -1.05) & (tri_min[:, 0] < 1.05) & \
+              (tri_max[:, 1] > -1.05) & (tri_min[:, 1] < 1.05) & \
+              (face_z < 1.0) & (face_z > -1.0)
+
+        if not vis.any():
+            return torch.tensor(1.0, device=device, requires_grad=True)
+
+        fv = face_uv[vis]
+        fc = face_c[vis]
+        fz = face_z[vis]
+        tm = tri_min[vis]
+        tx = tri_max[vis]
+
+        ys = torch.linspace(-1, 1, H, device=device)
+        xs = torch.linspace(-1, 1, W, device=device)
+        yg, xg = torch.meshgrid(ys, xs, indexing='ij')
+        grid   = torch.stack([xg, yg], dim=-1).view(-1, 2)
+        P_count = grid.shape[0]
+
+        target_flat = target_bchw.squeeze(0).view(3, H * W).T  # [P, 3]
+
+        buf = 10 * sigma
+        loss_sum   = torch.tensor(0.0, device=device)
+
+        for i in range(0, P_count, self.chunk_size):
+            p_uv = grid[i:i + self.chunk_size]
+            t_chunk = target_flat[i:i + self.chunk_size]
+            pmin = p_uv.min(dim=0)[0]
+            pmax = p_uv.max(dim=0)[0]
+
+            cmask = (tx[:, 0] > pmin[0] - buf) & (tm[:, 0] < pmax[0] + buf) & \
+                    (tx[:, 1] > pmin[1] - buf) & (tm[:, 1] < pmax[1] + buf)
+
+            if not cmask.any():
+                continue
+
+            cc, mc = self._rasterize_chunk(p_uv, fv[cmask], fc[cmask], fz[cmask], sigma)
+            diff = (mc * (cc - t_chunk)) ** 2
+            loss_sum = loss_sum + diff.sum()
+
+        return loss_sum
