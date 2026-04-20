@@ -9,7 +9,10 @@ EXP_ID:
     1 – data/1-direct.png + data/1-reflect.png  (paper experiment 1)
     2 – data/2-direct.png + data/2-reflect.png  (paper experiment 2)
 
-SHAPE: plane | saucer | random | tabula_scalata | shallow_bowl
+SHAPE: plane | saucer | random | tabula_scalata | shallow_bowl | dish | cone | saddle | wave |
+       luycho_concentric | luycho_radial
+
+CUP: cylinder | ellipse | ngon4 | ngon6 | ngon8 | ngonN | luycho_tapered | luycho_straight
 """
 import argparse
 import os
@@ -133,10 +136,10 @@ def parse_args():
                    help="Experiment id: 0=synthetic, 1=paper-1, 2=paper-2")
     p.add_argument("--shape",  type=str,   default="saucer",
                    help="Saucer shape: plane|saucer|dish|random|tabula_scalata|"
-                        "shallow_bowl|cone|saddle|wave")
+                        "shallow_bowl|cone|saddle|wave|luycho_concentric|luycho_radial")
     p.add_argument("--cup",    type=str,   default="cylinder",
-                   help="Mirror cup type: cylinder|ellipse|ngon4|ngon6|ngon8|ngonN "
-                        "(Section 3.5 extension)")
+                   help="Mirror cup type: cylinder|ellipse|ngon4|ngon6|ngon8|ngonN|"
+                        "luycho_tapered|luycho_straight (Section 3.5 extension)")
     p.add_argument("--res",    type=int,   default=150,
                    help="Heightfield resolution (NxN, paper uses 150)")
     p.add_argument("--render_size", type=int, default=512,
