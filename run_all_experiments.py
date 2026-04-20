@@ -26,7 +26,8 @@ import time
 from experiments import (
     PAPER_SHAPES, PAPER_CUP_TYPES,
     FIG15_EXPERIMENTS, FIG18_EXPERIMENTS, FIG19_EXPERIMENTS,
-    ALL_PAPER_EXPERIMENTS, get_paper_experiment,
+    ALL_PAPER_EXPERIMENTS, FULL_MATRIX_EXPERIMENTS,
+    get_paper_experiment,
 )
 from main import run_pipeline
 
@@ -57,8 +58,11 @@ def run_single(cfg, output_dir, resolution, render_size, iters1, iters2, iters3)
         iters2=iters2, iters3=iters3,
     )
 
-    # Move outputs to experiment-specific directory
-    exp_dir = os.path.join(output_dir, label)
+    # For matrix experiments, use {shape}_{cup} subdirectory naming
+    if cfg.get("matrix", False):
+        exp_dir = os.path.join(output_dir, f"{shape}_{cup}")
+    else:
+        exp_dir = os.path.join(output_dir, label)
     os.makedirs(exp_dir, exist_ok=True)
     for f in ["out_direct.png", "out_reflect.png",
               "out_stage1_direct.png", "out_stage1_reflect.png",
@@ -74,8 +78,8 @@ def main():
     p = argparse.ArgumentParser(description="Run all paper experiments")
     p.add_argument("--quick", action="store_true",
                    help="Quick test mode (low res, few iters)")
-    p.add_argument("--figure", type=int, default=None,
-                   help="Run only experiments for a specific figure (15, 18, 19)")
+    p.add_argument("--figure", type=str, default=None,
+                   help="Run only experiments for a specific figure: 15, 18, 19, or 'matrix'")
     p.add_argument("--shape", type=str, default=None,
                    help="Override shape for single experiment")
     p.add_argument("--exp", type=int, default=None,
@@ -91,12 +95,17 @@ def main():
         experiments = [{"shape": args.shape,
                         "exp_id": args.exp,
                         "cup": args.cup or "cylinder"}]
-    elif args.figure == 15:
+    elif args.figure == "15" or args.figure == 15:
         experiments = FIG15_EXPERIMENTS
-    elif args.figure == 18:
+    elif args.figure == "18" or args.figure == 18:
         experiments = FIG18_EXPERIMENTS
-    elif args.figure == 19:
+    elif args.figure == "19" or args.figure == 19:
         experiments = FIG19_EXPERIMENTS
+    elif args.figure == "matrix":
+        # Mark each config as matrix so output dirs use {shape}_{cup} format
+        experiments = [{**cfg, "matrix": True} for cfg in FULL_MATRIX_EXPERIMENTS]
+        if not args.output or args.output == "results":
+            args.output = "results/matrix"
     else:
         experiments = ALL_PAPER_EXPERIMENTS
 

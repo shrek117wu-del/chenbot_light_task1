@@ -242,13 +242,70 @@ def export_ellipse_cylinder_obj(a=0.5, b=0.3, height=2.0, segments=128,
     print(f"  ellipse cylinder OBJ saved → {obj_path}  ({segments*2} triangles)")
 
 
+def export_tapered_cup_obj(r_bottom=0.25, r_top=0.4, height=2.0, segments=128,
+                           obj_path="cup.obj"):
+    """
+    Write an OBJ for a tapered (frustum/conical) mirror cup.
+    Three.js Y-up: cup axis along Y, bottom at y=0, top at y=height.
+    The radius varies linearly from r_bottom (y=0) to r_top (y=height).
+    Outward normals are tilted to match the slope of the frustum wall.
+    """
+    verts, uvs, normals = [], [], []
+    faces = []
+
+    # Slope angle of the frustum wall (for correct outward normals)
+    dr = r_top - r_bottom
+    wall_len = math.sqrt(dr * dr + height * height)
+    # Normal components: ny points slightly downward (outward from slanted wall)
+    ny_norm = -dr / wall_len      # negative because r increases upward
+    nr_norm =  height / wall_len  # radial component
+
+    for seg in range(segments + 1):
+        theta = 2.0 * math.pi * seg / segments
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        nx = nr_norm * cos_t
+        nz = nr_norm * sin_t
+
+        # bottom vertex
+        verts.append((r_bottom * cos_t, 0.0,    r_bottom * sin_t))
+        normals.append((nx, ny_norm, nz))
+        uvs.append((seg / segments, 0.0))
+        # top vertex
+        verts.append((r_top * cos_t, height, r_top * sin_t))
+        normals.append((nx, ny_norm, nz))
+        uvs.append((seg / segments, 1.0))
+
+    for seg in range(segments):
+        a = seg * 2 + 1        # 1-indexed
+        b = seg * 2 + 2
+        c = (seg + 1) * 2 + 1
+        d = (seg + 1) * 2 + 2
+        faces.append((a, b, d, c))
+
+    with open(obj_path, "w") as f:
+        f.write("o tapered_cup\n")
+        for v in verts:
+            f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+        for vt in uvs:
+            f.write(f"vt {vt[0]:.6f} {vt[1]:.6f}\n")
+        for vn in normals:
+            f.write(f"vn {vn[0]:.6f} {vn[1]:.6f} {vn[2]:.6f}\n")
+        for a, b, d, c in faces:
+            f.write(f"f {a}/{a}/{a} {b}/{b}/{b} {d}/{d}/{d}\n")
+            f.write(f"f {a}/{a}/{a} {d}/{d}/{d} {c}/{c}/{c}\n")
+
+    print(f"  tapered cup OBJ saved → {obj_path}  ({segments*2} triangles)")
+
+
 def export_obj_and_texture(grid_x, grid_y, h_grid, color_grid,
                            obj_path="saucer.obj", tex_path="texture.png",
                            cup_type="cylinder", cup_radius=0.4,
                            cup_a=0.5, cup_b=0.3):
     """Main entry point: export saucer + mirror cup OBJs.
 
-    cup_type: 'cylinder', 'ngon4', 'ngon6', 'ngon8', 'ngon<N>', 'ellipse'
+    cup_type: 'cylinder', 'ngon4', 'ngon6', 'ngon8', 'ngon<N>', 'ellipse',
+              'luycho_tapered', 'luycho_straight'
     """
     export_saucer_obj(grid_x, grid_y, h_grid, color_grid, obj_path, tex_path)
 
@@ -258,6 +315,11 @@ def export_obj_and_texture(grid_x, grid_y, h_grid, color_grid,
         export_cylinder_obj(radius=cup_radius, obj_path=cup_path)
     elif cup_type == "ellipse":
         export_ellipse_cylinder_obj(a=cup_a, b=cup_b, obj_path=cup_path)
+    elif cup_type == "luycho_tapered":
+        export_tapered_cup_obj(r_bottom=0.25, r_top=0.4, height=2.0,
+                               obj_path=cup_path)
+    elif cup_type == "luycho_straight":
+        export_cylinder_obj(radius=0.38, height=1.8, obj_path=cup_path)
     elif cup_type.startswith("ngon"):
         suffix = cup_type[4:]
         if not suffix or not suffix.isdigit():

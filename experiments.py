@@ -86,10 +86,35 @@ def create_base_shape(shape_type, resolutions=DEFAULT_RES):
         # Sinusoidal waves in both X and Y directions
         Z = 0.04 * (np.sin(8.0 * X) * np.cos(6.0 * (Y + 1.0)) + 1.0)
 
+    elif shape_type == "luycho_concentric":
+        # Concentric ring/groove pattern like the Luycho blue saucer
+        # Profile: Z = amplitude * sin(2π * n_rings * R / R_max) with raised rim
+        R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
+        R_max = np.sqrt(0.5 ** 2 + 0.5 ** 2)
+        n_rings = 13
+        amplitude = 0.03
+        Z = amplitude * np.sin(2.0 * np.pi * n_rings * R / R_max)
+        # Add a slightly raised rim
+        r_norm = R / R_max
+        Z += 0.04 * np.clip(r_norm - 0.8, 0, None) / 0.2
+        Z = Z - Z.min()  # shift to non-negative
+
+    elif shape_type == "luycho_radial":
+        # Radial stripe/corrugation pattern like the Luycho white saucer
+        # Profile: Z = amplitude * sin(n_stripes * theta), theta = polar angle
+        theta = np.arctan2(Y + 1.0, X)   # polar angle centred at (0, -1)
+        R = np.sqrt(X ** 2 + (Y + 1.0) ** 2)
+        R_max = np.sqrt(0.5 ** 2 + 0.5 ** 2)
+        n_stripes = 48
+        amplitude = 0.025
+        # Amplitude fades toward centre (no corrugation right at centre)
+        r_norm = np.clip(R / R_max, 0, 1)
+        Z = amplitude * r_norm * (np.sin(n_stripes * theta) + 1.0)
+
     else:
         raise ValueError(f"Unknown shape_type: '{shape_type}'. "
                          "Choose from: plane, random, tabula_scalata, saucer, dish, "
-                         "shallow_bowl, cone, saddle, wave")
+                         "shallow_bowl, cone, saddle, wave, luycho_concentric, luycho_radial")
 
     return X, Y, Z
 
@@ -115,13 +140,23 @@ def create_reflection_grid(cup_type, grid_x, grid_y, P_2d,
     """
     from core.geometry import (precompute_reflection_grid,
                            precompute_reflection_ellipse_grid,
-                           precompute_reflection_ngon_grid)
+                           precompute_reflection_ngon_grid,
+                           precompute_reflection_tapered_grid)
 
     if cup_type == 'cylinder':
         return precompute_reflection_grid(grid_x, grid_y, P_2d, r=r)
 
     if cup_type == 'ellipse':
         return precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=a, b=b)
+
+    if cup_type == 'luycho_tapered':
+        # Tapered/conical cup: bottom radius 0.25, top radius 0.4, height 2.0
+        return precompute_reflection_tapered_grid(grid_x, grid_y, P_2d,
+                                                  r_bottom=0.25, r_top=0.4, height=2.0)
+
+    if cup_type == 'luycho_straight':
+        # Straight cylindrical cup, slightly wider: radius 0.38
+        return precompute_reflection_grid(grid_x, grid_y, P_2d, r=0.38)
 
     if cup_type.startswith('ngon'):
         suffix = cup_type[4:]
@@ -137,7 +172,8 @@ def create_reflection_grid(cup_type, grid_x, grid_y, P_2d,
         return precompute_reflection_ngon_grid(grid_x, grid_y, P_2d, n=n, r=r)
 
     raise ValueError(f"Unknown cup_type: '{cup_type}'. "
-                     "Choose from: cylinder, ellipse, ngon4, ngon6, ngon8, ngon<N>")
+                     "Choose from: cylinder, ellipse, luycho_tapered, luycho_straight, "
+                     "ngon4, ngon6, ngon8, ngon<N>")
 
 
 def generate_test_images(size=(512, 512), output_dir="data"):
@@ -308,3 +344,16 @@ FIG19_EXPERIMENTS = [
 ALL_PAPER_EXPERIMENTS = (
     FIG15_EXPERIMENTS + FIG18_EXPERIMENTS + FIG19_EXPERIMENTS
 )
+
+# Full matrix: 6 saucer types × 3 cup types (18 combinations)
+FULL_MATRIX_SAUCERS = [
+    "tabula_scalata", "dish", "shallow_bowl", "wave",
+    "luycho_concentric", "luycho_radial",
+]
+FULL_MATRIX_CUPS = ["cylinder", "luycho_tapered", "luycho_straight"]
+
+FULL_MATRIX_EXPERIMENTS = [
+    {"shape": s, "exp_id": 1, "cup": c}
+    for s in FULL_MATRIX_SAUCERS
+    for c in FULL_MATRIX_CUPS
+]
