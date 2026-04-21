@@ -313,8 +313,11 @@ if __name__ == '__main__':
             def _serve():
                 os.chdir(abs_out)
                 handler = http.server.SimpleHTTPRequestHandler
-                socketserver.TCPServer.allow_reuse_address = True
-                with socketserver.TCPServer(('', PORT), handler) as httpd:
+
+                class _ReuseServer(socketserver.TCPServer):
+                    allow_reuse_address = True
+
+                with _ReuseServer(('', PORT), handler) as httpd:
                     httpd.serve_forever()
 
             t = threading.Thread(target=_serve, daemon=True)

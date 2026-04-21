@@ -82,8 +82,9 @@ def normalize_saucer(verts, target_radius=0.5, target_center=(0.0, -1.0)):
     xy = verts[:, :2]
     # Bounding-box centre of the original mesh
     bbox_center = 0.5 * (xy.min(axis=0) + xy.max(axis=0))
-    # Largest vertex radius from that centre
-    orig_radius = float(np.max(np.linalg.norm(xy - bbox_center, axis=1)))
+    # Largest vertex radius from that centre (use squared distances to avoid
+    # computing N square roots; only one sqrt is needed at the end)
+    orig_radius = float(np.sqrt(np.max(np.sum((xy - bbox_center) ** 2, axis=1))))
     if orig_radius < 1e-8:
         orig_radius = 1.0
 
