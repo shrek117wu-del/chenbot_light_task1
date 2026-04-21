@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mirror Cup &amp; Saucer Art – 3D Viewer (Photo Model)</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { overflow:hidden; background:#0d0d1a; font-family:'Segoe UI',system-ui,sans-serif; color:#e0e0ff; }
+canvas { display:block; }
+#overlay { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+#title {
+  position:absolute; top:14px; left:50%; transform:translateX(-50%);
+  font-size:17px; font-weight:700; letter-spacing:2px;
+  text-shadow:0 0 18px #8888ff;
+  background:rgba(0,0,0,.5); padding:6px 24px; border-radius:30px;
+  border:1px solid rgba(120,120,255,.35);
+}
+#controls {
+  position:absolute; bottom:18px; left:18px;
+  background:rgba(0,0,0,.65); border:1px solid rgba(120,120,255,.25);
+  border-radius:12px; padding:12px 16px;
+  font-size:12px; line-height:1.9;
+  backdrop-filter:blur(8px);
+}
+#controls strong { color:#aaaaff; display:block; margin-bottom:3px; font-size:13px; }
+#info {
+  position:absolute; bottom:18px; right:18px;
+  background:rgba(0,0,0,.65); border:1px solid rgba(120,120,255,.25);
+  border-radius:12px; padding:12px 16px;
+  font-size:12px; line-height:1.9;
+  backdrop-filter:blur(8px); max-width:270px;
+}
+#info strong { color:#aaaaff; display:block; margin-bottom:3px; }
+#loading {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  font-size:14px; color:#aaaaff;
+  background:rgba(0,0,0,.85); padding:20px 36px; border-radius:12px;
+  border:1px solid #4444aa; text-align:center; max-width:380px;
+}
+#status {
+  position:absolute; top:62px; left:50%; transform:translateX(-50%);
+  font-size:12px; color:#88ff88;
+  background:rgba(0,0,0,.55); padding:4px 16px; border-radius:20px;
+  display:none; white-space:nowrap;
+}
+/* Comparison strip at the top-right */
+#compare {
+  position:absolute; top:58px; right:16px; display:flex; gap:8px;
+  pointer-events:none;
+}
+.cmpBox {
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+}
+.cmpBox span { font-size:10px; color:#aaaacc; }
+.cmpBox img {
+  width:120px; height:120px; object-fit:cover;
+  border:1px solid rgba(120,120,255,.4); border-radius:6px;
+}
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div id="title">Mirror Cup &amp; Saucer Art — Photo-Model 3D View</div>
+  <div id="status"></div>
+
+  <!-- Side-by-side comparison thumbnails -->
+  <div id="compare">
+    <div class="cmpBox">
+      <span>Target Direct</span>
+      <img id="tgtDirect"   src="" alt="target direct"   onerror="this.style.display='none'">
+    </div>
+    <div class="cmpBox">
+      <span>Out Direct</span>
+      <img id="outDirect"   src="out_direct.png"   alt="out direct"   onerror="this.style.display='none'">
+    </div>
+    <div class="cmpBox">
+      <span>Target Reflect</span>
+      <img id="tgtReflect"  src="" alt="target reflect"  onerror="this.style.display='none'">
+    </div>
+    <div class="cmpBox">
+      <span>Out Reflect</span>
+      <img id="outReflect"  src="out_reflect.png"  alt="out reflect"  onerror="this.style.display='none'">
+    </div>
+  </div>
+
+  <div id="controls">
+    <strong>Controls</strong>
+    🖱 Left drag : Rotate<br>
+    🖱 Right drag : Pan<br>
+    🖱 Scroll : Zoom<br>
+    ⌨ R : Reset camera<br>
+    ⌨ P : Paper camera view<br>
+    ⌨ T : Top-down view<br>
+    ⌨ W : Wireframe toggle<br>
+    ⌨ I : Image panels toggle
+  </div>
+  <div id="info">
+    <strong>Scene</strong>
+    Optimised saucer with learned texture.<br>
+    Cup mirror reflects the saucer surface.<br><br>
+    <span style="color:#88aaff">■</span> Mirror cup (r≈0.4, h=1.0)<br>
+    <span style="color:#ffaa44">■</span> Saucer (photo model, optimised texture)<br>
+    <span style="color:#88ff88">■</span> Comparison panels: direct / reflected
+  </div>
+  <div id="loading">Loading 3D model…<br>
+    <small style="color:#6666aa">Serve with:<br>
+    <code>cd pro/out &amp;&amp; python -m http.server 8080</code><br>
+    then open <code>http://localhost:8080/viewer.html</code></small>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE         from 'three';
+import { OrbitControls }  from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader }      from 'three/addons/loaders/OBJLoader.js';
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Renderer
+// ──────────────────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+renderer.toneMapping       = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.outputColorSpace  = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scene
+// ──────────────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0d1a);
+scene.fog = new THREE.FogExp2(0x0d0d1a, 0.04);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Camera
+// Coordinate note: Python (px, py, pz_height) → Three.js (px, pz_height, -py)
+//  Paper cam (0,-5.5,5) → Three.js (0, 5.0, 5.5)
+// ──────────────────────────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.05, 200);
+camera.position.set(0, 3.5, 5.0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0.3, 1.0);
+controls.minDistance = 0.2;
+controls.maxDistance = 30;
+controls.update();
+
+const PRESET_DEFAULT = { pos:[0,3.5,5.0],  tgt:[0,0.3,1.0] };
+const PRESET_PAPER   = { pos:[0,5.0,5.5],  tgt:[0,0.15,1.0] };
+const PRESET_TOP     = { pos:[0,6.0,1.0],  tgt:[0,0.0,1.0] };
+
+function setCamera(p){ camera.position.set(...p.pos); controls.target.set(...p.tgt); controls.update(); }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Lights
+// ──────────────────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+const sun = new THREE.DirectionalLight(0xfff8e8, 1.4);
+sun.position.set(4,10,5); sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.near=0.1; sun.shadow.camera.far=40;
+sun.shadow.camera.left=sun.shadow.camera.bottom=-5;
+sun.shadow.camera.right=sun.shadow.camera.top=5;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x88aaff, 0.5);
+fill.position.set(-4,4,-2); scene.add(fill);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Table
+// ──────────────────────────────────────────────────────────────────────────────
+const table = new THREE.Mesh(
+  new THREE.PlaneGeometry(12,12),
+  new THREE.MeshStandardMaterial({ color:0x1a1a2e, roughness:0.85, metalness:0.1 })
+);
+table.rotation.x = -Math.PI/2;
+table.position.y = -0.01;
+table.receiveShadow = true;
+scene.add(table);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Mirror cup: real-time cube-map reflections
+// ──────────────────────────────────────────────────────────────────────────────
+const cubeRT = new THREE.WebGLCubeRenderTarget(512, {
+  generateMipmaps: true,
+  minFilter: THREE.LinearMipmapLinearFilter,
+  colorSpace: THREE.SRGBColorSpace
+});
+const cubeCamera = new THREE.CubeCamera(0.05, 50, cubeRT);
+cubeCamera.position.set(0, 0.3, 0);
+scene.add(cubeCamera);
+
+const mirrorMatInner = new THREE.MeshStandardMaterial({
+  envMap:cubeRT.texture, envMapIntensity:1.0,
+  roughness:0.0, metalness:1.0, color:0xffffff, side:THREE.BackSide
+});
+const mirrorMatOuter = new THREE.MeshStandardMaterial({
+  envMap:cubeRT.texture, envMapIntensity:1.0,
+  roughness:0.02, metalness:1.0, color:0xffffff, side:THREE.FrontSide
+});
+
+let cupMeshes = [];
+const allMeshes = [];
+
+// Build cup geometry – straight cylinder by default, with nice rim and cap
+function buildCupMeshes(radBot=0.4, radTop=0.4, height=1.0) {
+  // Inner reflective surface
+  const geoInner = new THREE.CylinderGeometry(radTop*1.0, radBot*1.0, height, 128, 1, true);
+  const mInner = new THREE.Mesh(geoInner, mirrorMatInner);
+  mInner.position.set(0, height*0.5, 0);
+  scene.add(mInner); allMeshes.push(mInner); cupMeshes.push(mInner);
+
+  // Outer reflective surface
+  const geoOuter = new THREE.CylinderGeometry(radTop*1.005, radBot*1.005, height, 128, 1, true);
+  const mOuter = new THREE.Mesh(geoOuter, mirrorMatOuter);
+  mOuter.position.set(0, height*0.5, 0);
+  mOuter.castShadow = true;
+  scene.add(mOuter); allMeshes.push(mOuter); cupMeshes.push(mOuter);
+
+  // Gold rim ring
+  const rimMat = new THREE.MeshStandardMaterial({ color:0xccaa44, metalness:0.95, roughness:0.05 });
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(radTop, 0.008, 16, 128), rimMat);
+  rim.rotation.x = Math.PI/2; rim.position.set(0, height, 0);
+  scene.add(rim); allMeshes.push(rim); cupMeshes.push(rim);
+
+  // Bottom cap
+  const capMat = new THREE.MeshStandardMaterial({ color:0x888888, metalness:0.7, roughness:0.3 });
+  const cap = new THREE.Mesh(new THREE.CircleGeometry(radBot, 64), capMat);
+  cap.rotation.x = Math.PI/2; cap.position.set(0,0,0);
+  scene.add(cap); allMeshes.push(cap); cupMeshes.push(cap);
+}
+
+// Try to load cup.obj from current directory; fall back to default cylinder
+const cupObjLoader = new OBJLoader();
+cupObjLoader.load('cup.obj',
+  (obj) => {
+    obj.traverse(child => {
+      if (!child.isMesh) return;
+      const inner = child.clone(); inner.material = mirrorMatInner;
+      scene.add(inner); allMeshes.push(inner); cupMeshes.push(inner);
+      child.material = mirrorMatOuter; child.castShadow = true;
+      scene.add(child); allMeshes.push(child); cupMeshes.push(child);
+    });
+    showStatus('✓ cup.obj loaded');
+  },
+  undefined,
+  () => {
+    // Try conical proportions from the photo_cup_conical profile
+    buildCupMeshes(0.4, 0.46, 1.0);
+    showStatus('Using built-in cup geometry');
+  }
+);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Image comparison panels (rendered outputs + targets)
+// ──────────────────────────────────────────────────────────────────────────────
+const imgPanels = [];
+let panelsVisible = true;
+
+function makePanel(src, posX, posZ, labelText) {
+  const texL = new THREE.TextureLoader();
+  texL.load(src, (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.3, 1.3),
+      new THREE.MeshBasicMaterial({ map:tex, side:THREE.DoubleSide })
+    );
+    mesh.position.set(posX, 0.75, posZ);
+    mesh.rotation.y = posX > 0 ? -Math.PI/6 : Math.PI/6;
+    scene.add(mesh); imgPanels.push(mesh);
+
+    const cvs = document.createElement('canvas');
+    cvs.width=256; cvs.height=48;
+    const ctx2 = cvs.getContext('2d');
+    ctx2.fillStyle='#aaccff'; ctx2.font='bold 20px sans-serif'; ctx2.textAlign='center';
+    ctx2.fillText(labelText, 128, 32);
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map:new THREE.CanvasTexture(cvs), transparent:true }));
+    spr.scale.set(1.1, 0.22, 1); spr.position.set(posX, 1.5, posZ);
+    scene.add(spr); imgPanels.push(spr);
+    showStatus(`✓ Panel: ${labelText}`);
+  }, undefined, () => console.warn('Panel not found:', src));
+}
+
+makePanel('out_direct.png',  -2.0, 1.0, 'Direct View');
+makePanel('out_reflect.png',  2.0, 1.0, 'Reflected View');
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Saucer: load saucer.obj + texture.png
+// ──────────────────────────────────────────────────────────────────────────────
+const loading  = document.getElementById('loading');
+const statusEl = document.getElementById('status');
+
+function showStatus(msg, color='#88ff88') {
+  statusEl.textContent = msg; statusEl.style.color = color;
+  statusEl.style.display = 'block';
+  setTimeout(() => { statusEl.style.display = 'none'; }, 4000);
+}
+
+function attachSaucer(obj, mat) {
+  obj.traverse(child => {
+    if (!child.isMesh) return;
+    child.material = mat;
+    child.castShadow = child.receiveShadow = true;
+    allMeshes.push(child);
+  });
+  scene.add(obj);
+  loading.style.display = 'none';
+  showStatus('✓ Saucer loaded');
+}
+
+const texLoader = new THREE.TextureLoader();
+const objLoader = new OBJLoader();
+
+texLoader.load('texture.png',
+  (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tex.minFilter  = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, roughness:0.55, metalness:0.0,
+      side: THREE.DoubleSide, envMap:cubeRT.texture, envMapIntensity:0.15
+    });
+    objLoader.load('saucer.obj',
+      obj => attachSaucer(obj, mat),
+      xhr => { loading.textContent = `Loading saucer… ${xhr.loaded&&xhr.total?(xhr.loaded/xhr.total*100|0):0}%`; },
+      () => { loading.textContent='⚠ saucer.obj not found.\nRun python -m pro.main first.'; }
+    );
+  },
+  undefined,
+  () => {
+    // No texture — plain material fallback
+    showStatus('⚠ texture.png missing', '#ffaa44');
+    const mat = new THREE.MeshStandardMaterial({ color:0xddbb88, roughness:0.5, side:THREE.DoubleSide });
+    objLoader.load('saucer.obj', obj => attachSaucer(obj, mat), null,
+      () => { loading.innerHTML='⚠ No model files found.<br>Run: <code>python -m pro.main</code>'; }
+    );
+  }
+);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Axes helper
+// ──────────────────────────────────────────────────────────────────────────────
+scene.add(new THREE.AxesHelper(0.4));
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Keyboard shortcuts
+// ──────────────────────────────────────────────────────────────────────────────
+let wireframe = false;
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k==='r') setCamera(PRESET_DEFAULT);
+  if (k==='p') setCamera(PRESET_PAPER);
+  if (k==='t') setCamera(PRESET_TOP);
+  if (k==='w') {
+    wireframe = !wireframe;
+    allMeshes.forEach(m => {
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      mats.forEach(mt => { mt.wireframe = wireframe; });
+    });
+    showStatus(wireframe ? 'Wireframe ON' : 'Wireframe OFF');
+  }
+  if (k==='i') {
+    panelsVisible = !panelsVisible;
+    imgPanels.forEach(p => { p.visible = panelsVisible; });
+    showStatus(panelsVisible ? 'Panels ON' : 'Panels OFF');
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Animation loop
+// ──────────────────────────────────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  cupMeshes.forEach(m => { if (m) m.visible = false; });
+  cubeCamera.update(renderer, scene);
+  cupMeshes.forEach(m => { if (m) m.visible = true; });
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
