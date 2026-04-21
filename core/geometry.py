@@ -279,36 +279,6 @@ def precompute_reflection_ellipse_grid(grid_x, grid_y, P_2d, a=0.5, b=0.3):
 
 
 # ---------------------------------------------------------------------------
-# Tapered (frustum) cup mirror reflection
-# ---------------------------------------------------------------------------
-
-def precompute_reflection_tapered_grid(grid_x, grid_y, P_2d,
-                                       r_bottom=0.25, r_top=0.4, height=2.0):
-    """
-    Compute reflected XY positions for a frustum (tapered/conical) mirror cup.
-
-    The cup radius varies linearly with height: r(h) = r_bottom + (r_top - r_bottom) * h / height.
-    For the horizontal 2-D reflection problem (which ignores the height axis), we
-    use the average radius r_avg = (r_bottom + r_top) / 2 as an approximation so
-    that the standard cylindrical reflection code can be reused.  This gives a
-    good first-order result; the taper primarily affects the 3-D geometry of the
-    cup OBJ but the image-space reflection map is dominated by the average radius.
-
-    Args:
-        grid_x, grid_y : (H, W) numpy arrays — saucer XY in world coords
-        P_2d           : (2,) camera position in the horizontal plane
-        r_bottom       : bottom radius of the frustum
-        r_top          : top radius of the frustum
-        height         : height of the cup (not used in 2-D approximation)
-
-    Returns:
-        grid_rx, grid_ry : (H, W) numpy arrays — virtual image XY positions
-    """
-    r_avg = 0.5 * (r_bottom + r_top)
-    return precompute_reflection_grid(grid_x, grid_y, P_2d, r=r_avg)
-
-
-# ---------------------------------------------------------------------------
 # Regular n-gonal prism mirror reflection  (Section 3.5, Figures 17 & 19)
 # ---------------------------------------------------------------------------
 

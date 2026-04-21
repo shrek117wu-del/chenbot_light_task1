@@ -44,34 +44,6 @@
             background: rgba(0,0,0,0.55); padding: 4px 16px; border-radius: 20px;
             display: none;
         }
-        #selector {
-            position: absolute; top: 22px; left: 22px;
-            background: rgba(0,0,0,0.65); border: 1px solid rgba(120,120,255,0.25);
-            border-radius: 12px; padding: 14px 18px;
-            font-size: 13px; line-height: 1.8;
-            backdrop-filter: blur(8px);
-            pointer-events: auto;
-            min-width: 210px;
-        }
-        #selector strong { color: #aaaaff; display: block; margin-bottom: 6px; font-size: 14px; }
-        #selector label { color: #8888bb; font-size: 11px; display: block; margin-top: 8px; margin-bottom: 2px; }
-        #selector select, #selector input[type=text] {
-            width: 100%; background: rgba(20,20,50,0.9);
-            color: #e0e0ff; border: 1px solid rgba(120,120,255,0.4);
-            border-radius: 6px; padding: 4px 8px;
-            font-size: 12px; pointer-events: auto;
-        }
-        #selector select:focus, #selector input[type=text]:focus {
-            outline: none; border-color: rgba(120,120,255,0.8);
-        }
-        #selector button {
-            margin-top: 12px; width: 100%;
-            background: rgba(60,60,160,0.8); color: #e0e0ff;
-            border: 1px solid rgba(120,120,255,0.5); border-radius: 8px;
-            padding: 6px 0; font-size: 13px; cursor: pointer;
-            pointer-events: auto;
-        }
-        #selector button:hover { background: rgba(80,80,200,0.9); }
     </style>
 </head>
 <body>
@@ -98,43 +70,6 @@
         <span style="color:#ffaa44">■</span> Saucer: 1×1 footprint, Three.js z∈[0.5,1.5]<br>
         Camera: Three.js (0, 5, 5.5) → origin<br>
         <span style="color:#88ff88">■</span> Panels: direct / reflected views
-    </div>
-    <div id="selector">
-        <strong>Model Selection</strong>
-        <label>Saucer Model</label>
-        <select id="saucer-select">
-            <option value="current">Current (saucer.obj)</option>
-            <option value="models/saucers/tabula_scalata.obj">Tabula Scalata</option>
-            <option value="models/saucers/dish.obj">Dish</option>
-            <option value="models/saucers/shallow_bowl.obj">Shallow Bowl</option>
-            <option value="models/saucers/wave.obj">Wave</option>
-            <option value="models/saucers/luycho_concentric.obj">Luycho Concentric</option>
-            <option value="models/saucers/luycho_radial.obj">Luycho Radial</option>
-        </select>
-        <label>Cup Model</label>
-        <select id="cup-select">
-            <option value="cup.obj">Current (cup.obj)</option>
-            <option value="models/cups/cylinder.obj">Cylinder</option>
-            <option value="models/cups/luycho_tapered.obj">Luycho Tapered</option>
-            <option value="models/cups/luycho_straight.obj">Luycho Straight</option>
-        </select>
-        <label>Direct Image</label>
-        <select id="direct-select">
-            <option value="out_direct.png">out_direct.png</option>
-            <option value="data/1-direct.png">data/1-direct.png</option>
-            <option value="data/2-direct.png">data/2-direct.png</option>
-            <option value="custom">Custom…</option>
-        </select>
-        <input id="direct-custom" type="text" placeholder="path/to/direct.png" style="display:none;margin-top:4px">
-        <label>Reflect Image</label>
-        <select id="reflect-select">
-            <option value="out_reflect.png">out_reflect.png</option>
-            <option value="data/1-reflect.png">data/1-reflect.png</option>
-            <option value="data/2-reflect.png">data/2-reflect.png</option>
-            <option value="custom">Custom…</option>
-        </select>
-        <input id="reflect-custom" type="text" placeholder="path/to/reflect.png" style="display:none;margin-top:4px">
-        <button id="load-btn">↺ Load Selection</button>
     </div>
     <div id="loading">Loading model…<br><small style="color:#6666aa">Ensure the HTTP server is running:<br>python viewer.py</small></div>
 </div>
@@ -213,9 +148,6 @@ function setCamera(preset) {
 
 let wireframe = false;
 const meshes = [];
-// Saucer tracking (Group + child meshes kept separate for clean removal)
-let saucerGroup = null;
-let saucerMeshChildren = [];
 
 window.addEventListener('keydown', e => {
     if (e.key === 'r' || e.key === 'R') setCamera(PRESET_DEFAULT);
@@ -297,7 +229,7 @@ const mirrorMatOuter = new THREE.MeshStandardMaterial({
     side:             THREE.FrontSide
 });
 
-// Mirror cup meshes (populated by loadCupModel or createFallbackCylinder)
+// Mirror cup meshes (populated by loader or fallback)
 let cupMeshes = [];
 
 function createFallbackCylinder() {
@@ -339,18 +271,13 @@ function createFallbackCylinder() {
     cupMeshes.push(bottom);
 }
 
-function clearCupFromScene() {
-    cupMeshes.forEach(m => {
-        scene.remove(m);
-        const i = meshes.indexOf(m);
-        if (i !== -1) meshes.splice(i, 1);
-    });
-    cupMeshes = [];
-}
-
-function addCupMeshesFromObj(cupObj) {
+// Try to load cup.obj first; fall back to built-in cylinder
+const cupLoader = new OBJLoader();
+cupLoader.load('cup.obj', (cupObj) => {
+    // Apply mirror material to loaded cup model
     cupObj.traverse(child => {
         if (child.isMesh) {
+            // Create inner (BackSide) and outer (FrontSide) copies
             const innerClone = child.clone();
             innerClone.material = mirrorMatInner;
             scene.add(innerClone);
@@ -365,7 +292,7 @@ function addCupMeshesFromObj(cupObj) {
         }
     });
 
-    // Rim and bottom cap
+    // Add rim and bottom for the loaded cup
     const rimGeo = new THREE.RingGeometry(0.38, 0.43, 128);
     const rimMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.1 });
     const rim = new THREE.Mesh(rimGeo, rimMat);
@@ -381,28 +308,13 @@ function addCupMeshesFromObj(cupObj) {
     bottom.position.set(0, 0.0, 0);
     scene.add(bottom);
     cupMeshes.push(bottom);
-}
 
-function loadCupModel(objPath) {
-    clearCupFromScene();
-    const loader = new OBJLoader();
-    loader.load(
-        objPath,
-        (cupObj) => {
-            addCupMeshesFromObj(cupObj);
-            showStatus('✓ Cup: ' + objPath.split('/').pop());
-        },
-        undefined,
-        () => {
-            if (objPath === 'cup.obj') {
-                console.log('cup.obj not found, using built-in cylinder geometry');
-                createFallbackCylinder();
-            } else {
-                showStatus('⚠ Failed to load cup: ' + objPath, '#ffaa44');
-            }
-        }
-    );
-}
+    showStatus('✓ Cup model loaded from cup.obj');
+}, undefined, () => {
+    // cup.obj not found — use fallback cylinder
+    console.log('cup.obj not found, using built-in cylinder geometry');
+    createFallbackCylinder();
+});
 
 // ---------------------------------------------------------------------------
 // Image Reference Panels  (direct + reflected rendered views)
@@ -456,16 +368,8 @@ function createImagePanel(imgSrc, posX, posZ, label) {
 }
 
 // Direct view panel (left)  and reflected view panel (right)
-function clearImagePanels() {
-    imagePanels.forEach(p => scene.remove(p));
-    imagePanels.length = 0;
-}
-
-function reloadImagePanels(directPath, reflectPath) {
-    clearImagePanels();
-    createImagePanel(directPath,  -1.8, 1.0, 'Direct View');
-    createImagePanel(reflectPath,  1.8, 1.0, 'Reflected View');
-}
+createImagePanel(DIRECT_IMG_PATH,  -1.8, 1.0, 'Direct View');
+createImagePanel(REFLECT_IMG_PATH,  1.8, 1.0, 'Reflected View');
 
 function toggleImagePanels() {
     panelsVisible = !panelsVisible;
@@ -497,37 +401,22 @@ function buildFallbackSaucerMaterial(texture) {
     });
 }
 
-function clearSaucerFromScene() {
-    if (saucerGroup) {
-        scene.remove(saucerGroup);
-        saucerGroup = null;
-    }
-    saucerMeshChildren.forEach(m => {
-        const i = meshes.indexOf(m);
-        if (i !== -1) meshes.splice(i, 1);
-    });
-    saucerMeshChildren = [];
-}
-
-function addSaucerToScene(obj, mat, statusMsg) {
+function addSaucerToScene(obj, mat) {
     obj.traverse(child => {
         if (child.isMesh) {
             child.material = mat;
             child.castShadow    = true;
             child.receiveShadow = true;
             meshes.push(child);
-            saucerMeshChildren.push(child);
         }
     });
-    saucerGroup = obj;
     scene.add(obj);
     loading.style.display = 'none';
-    showStatus(statusMsg || '✓ Saucer loaded');
-    console.log('Saucer loaded:', statusMsg);
+    showStatus('✓ Saucer loaded with texture');
+    console.log('Saucer loaded OK.');
 }
 
-function loadSaucerCurrent() {
-    clearSaucerFromScene();
+function loadWithTexture() {
     texLoader.load(
         'texture.png',
         (texture) => {
@@ -539,7 +428,7 @@ function loadSaucerCurrent() {
 
             objLoader.load(
                 'saucer.obj',
-                obj => addSaucerToScene(obj, mat, '✓ Saucer loaded with texture'),
+                obj => addSaucerToScene(obj, mat),
                 xhr => { loading.textContent = `Loading saucer… ${(xhr.loaded/xhr.total*100|0)}%`; },
                 err => {
                     console.error('OBJ load error:', err);
@@ -549,9 +438,9 @@ function loadSaucerCurrent() {
             );
         },
         undefined,
-        () => {
+        (err) => {
             // texture.png failed → load OBJ with vertex-colour fallback
-            console.warn('texture.png load failed, using vertex-colour fallback.');
+            console.warn('texture.png load failed, using vertex-colour fallback.', err);
             showStatus('⚠ texture.png missing – using vertex colours', '#ffaa44');
             const mat = new THREE.MeshStandardMaterial({
                 color: 0xddbb88, roughness: 0.5, metalness: 0.0,
@@ -559,7 +448,7 @@ function loadSaucerCurrent() {
             });
             objLoader.load(
                 'saucer.obj',
-                obj => addSaucerToScene(obj, mat, 'Saucer loaded (no texture)'),
+                obj => { addSaucerToScene(obj, mat); showStatus('Saucer loaded (no texture)', '#ffaa44'); },
                 null,
                 err2 => {
                     loading.innerHTML = '⚠ No model files found.<br>Run: <code>python main.py --exp 0 --no_viewer</code>';
@@ -570,67 +459,7 @@ function loadSaucerCurrent() {
     );
 }
 
-function loadSaucerModel(objPath) {
-    clearSaucerFromScene();
-    const mat = new THREE.MeshStandardMaterial({
-        color:           0xf0f0f0,
-        roughness:       0.6,
-        metalness:       0.0,
-        side:            THREE.DoubleSide,
-        envMap:          cubeRT.texture,
-        envMapIntensity: 0.1
-    });
-    objLoader.load(
-        objPath,
-        obj => addSaucerToScene(obj, mat, '✓ Saucer: ' + objPath.split('/').pop()),
-        undefined,
-        () => showStatus('⚠ Failed to load saucer: ' + objPath, '#ffaa44')
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Initial scene load
-// ---------------------------------------------------------------------------
-loadCupModel('cup.obj');
-loadSaucerCurrent();
-reloadImagePanels(DIRECT_IMG_PATH, REFLECT_IMG_PATH);
-
-// ---------------------------------------------------------------------------
-// UI selector wiring
-// ---------------------------------------------------------------------------
-const saucerSelect  = document.getElementById('saucer-select');
-const cupSelect     = document.getElementById('cup-select');
-const directSelect  = document.getElementById('direct-select');
-const directCustom  = document.getElementById('direct-custom');
-const reflectSelect = document.getElementById('reflect-select');
-const reflectCustom = document.getElementById('reflect-custom');
-const loadBtn       = document.getElementById('load-btn');
-
-directSelect.addEventListener('change', () => toggleCustomInput(directSelect, directCustom));
-reflectSelect.addEventListener('change', () => toggleCustomInput(reflectSelect, reflectCustom));
-
-function toggleCustomInput(selectEl, inputEl) {
-    inputEl.style.display = selectEl.value === 'custom' ? 'block' : 'none';
-}
-
-function getImagePath(selectEl, inputEl, defaultPath) {
-    return selectEl.value === 'custom' ? (inputEl.value.trim() || defaultPath) : selectEl.value;
-}
-
-loadBtn.addEventListener('click', () => {
-    // Saucer
-    const sv = saucerSelect.value;
-    if (sv === 'current') loadSaucerCurrent();
-    else loadSaucerModel(sv);
-
-    // Cup
-    loadCupModel(cupSelect.value);
-
-    // Image panels
-    const dPath = getImagePath(directSelect,  directCustom,  DIRECT_IMG_PATH);
-    const rPath = getImagePath(reflectSelect, reflectCustom, REFLECT_IMG_PATH);
-    reloadImagePanels(dPath, rPath);
-});
+loadWithTexture();
 
 // ---------------------------------------------------------------------------
 // Axes helper (small, at origin)
