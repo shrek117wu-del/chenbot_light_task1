@@ -8,6 +8,7 @@ Key fix: correct perspective divide uses w-component (col 3) of clip-space, not 
 import math
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 
 
 def get_camera_matrix(camera_pos, look_at, up=(0., 1., 0.),
@@ -306,6 +307,12 @@ class SoftTriangleRendererLoss(SoftTriangleRenderer):
     Wrapper that computes loss = SUM of squared pixel differences (matching
     the paper's Frobenius norm definition).  Exposed separately so the
     basic ``render()`` method is unaffected.
+
+    Gradient checkpointing is applied per pixel-chunk so that the large
+    [P_c × F_k] intermediate tensors (sigmoid values, depth weights, etc.)
+    are freed immediately after each chunk's forward pass and recomputed
+    on demand during backward.  This reduces peak memory from O(chunks × F_k)
+    to O(F_k) at the cost of roughly 2× compute per backward pass.
     """
 
     def forward(self, vertices, faces, colors, target_bchw, P_matrix, sigma=None):
@@ -347,6 +354,12 @@ class SoftTriangleRendererLoss(SoftTriangleRenderer):
         buf = 10 * sigma
         loss_sum   = torch.tensor(0.0, device=device)
 
+        def _chunk_loss(p_uv_, fv_, fc_, fz_, t_chunk_):
+            """Compute SUM squared loss for one pixel chunk (checkpointable)."""
+            cc, mc = self._rasterize_chunk(p_uv_, fv_, fc_, fz_, sigma)
+            diff = (mc * (cc - t_chunk_)) ** 2
+            return diff.sum()
+
         for i in range(0, P_count, self.chunk_size):
             p_uv = grid[i:i + self.chunk_size]
             t_chunk = target_flat[i:i + self.chunk_size]
@@ -359,8 +372,14 @@ class SoftTriangleRendererLoss(SoftTriangleRenderer):
             if not cmask.any():
                 continue
 
-            cc, mc = self._rasterize_chunk(p_uv, fv[cmask], fc[cmask], fz[cmask], sigma)
-            diff = (mc * (cc - t_chunk)) ** 2
-            loss_sum = loss_sum + diff.sum()
+            # Use gradient checkpointing: the large [P_c, F_k] intermediate
+            # tensors (D, W, etc.) are freed after this forward call and
+            # recomputed during backward, capping peak memory at ~one chunk.
+            chunk_loss = torch.utils.checkpoint.checkpoint(
+                _chunk_loss,
+                p_uv, fv[cmask], fc[cmask], fz[cmask], t_chunk,
+                use_reentrant=False,
+            )
+            loss_sum = loss_sum + chunk_loss
 
         return loss_sum
